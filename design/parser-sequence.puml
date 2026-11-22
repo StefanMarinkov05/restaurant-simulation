@@ -1,0 +1,557 @@
+@startuml parser-sequence
+' =====================================================================
+'    "Initialization of the simulation, with (maxTicks = 0), until the
+'     program terminates. Initialize one object of every type (e.g.,
+'     ingredient, recipe with and without basic dish, restaurant, table
+'     per table type, customer per customer type, incident per incident
+'     type)."
+'
+'    2 ingredients         onion, potato
+'    2 recipes             one WITH basicDishFor, one WITHOUT
+'    1 restaurant          Fire (EUROPEAN)
+'    3 tables              one per TableType: COMMON, BAR, SEPARATED
+'    3 customer groups     one per type: REGULAR, CASUAL, EVENT
+'    4 incidents           one per IncidentType: STAFF, RECIPE,
+'                          PACKAGING, UNAVAILABLE
+'
+'  CLI:  --food food.json --restaurants restaurants.json
+'        --scenario scenario.json --maxTicks 0
+'        --logLevel DEBUG --out (default: standard output)
+'
+'  maxTicks = 0 is a multiple of 24, so per spec 2.3.2 the run ends
+'  with the serving phase that never starts: the log goes straight
+'  from "Simulation started." to "Simulation statistics are
+'  calculated." - no preparation phase, no ticks, no evening.
+' =====================================================================
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 260
+skinparam ParticipantPadding 8
+skinparam BoxPadding 10
+autonumber
+
+participant "Main" as Main
+
+box "Config" #F0FFF0
+  participant "loader:\nConfigurationLoader" as Loader
+  participant "validator:\nValidator" as Val
+  participant "food:\nFoodParser" as Food
+  participant "rest:\nRestaurantParser" as Rest
+  participant "scen:\nScenarioParser" as Scen
+  participant "model:\nParsedModel" as Model
+end box
+
+participant "logger:\nLogger" as Log
+
+[-> Main : main(args = ["~--food", "food.json",\n"~--restaurants", "restaurants.json",\n"~--scenario", "scenario.json",\n"~--maxTicks", "0",\n"~--logLevel", "DEBUG"])
+activate Main
+
+Main -> Main : run(food = "food.json", restaurants = "restaurants.json",\nscenario = "scenario.json", maxTicks = 0, logLevel = DEBUG, out = null)
+activate Main #DDDDDD
+note right of Main
+  main() is the thin CLI shell: read argv, match each
+  flag from section 3.1, convert "0" to Int and "DEBUG"
+  to LogLevel, then delegate. ~--out is absent, so
+  out = null and the Logger falls back to stdout.
+  Nothing below Main ever sees an argv array.
+end note
+
+Main -> Log : configure(level = DEBUG, out = standard output)
+activate Log
+Log --> Main
+deactivate Log
+
+create Loader
+Main -> Loader : ConfigurationLoader(food = "food.json",\nrestaurants = "restaurants.json", scenario = "scenario.json", maxTicks = 0)
+activate Loader
+Loader --> Main : loader
+deactivate Loader
+
+Main -> Loader : load()
+activate Loader
+
+create Model
+Loader -> Model : ParsedModel()
+activate Model
+Model --> Loader : model
+deactivate Model
+
+' =====================================================================
+group Stage 1 - food.json : 2 ingredients, 2 recipes (with / without basic dish)
+
+  Loader -> Food : parse("food.json")
+  activate Food
+
+  Food -> Val : validateFile("food.json", "food.schema")
+  activate Val
+  Val --> Food : true
+  deactivate Val
+
+  Food -> Food : readEntities("food.json")
+  activate Food #DDDDDD
+
+  create "foodFile:\nFoodFileDto" as FoodFile
+  Food -> FoodFile : Json.decodeFromString(fileText)
+  activate FoodFile
+  FoodFile --> Food : FoodFileDto(ingredients = [2 entries], recipes = [2 entries])
+  deactivate FoodFile
+  note right of Food
+    The schema already passed, so this decode
+    cannot fail on shape - only kotlinx.serialization
+    maps JSON keys straight onto typed fields.
+  end note
+
+  ' --- the two ingredients ---
+  Food -> Food : serialiseIngredient(IngredientDto("onion", "X", 10, bestBefore = 1))
+  Food -> Model : registerIngredient(Ingredient("onion", X, 10, bestBefore = 1))
+  activate Model
+  Model --> Food : true
+  deactivate Model
+
+  Food -> Food : serialiseIngredient(IngredientDto("potato", "g", 1000, bestBefore = 3))
+  Food -> Model : registerIngredient(Ingredient("potato", G, 1000, bestBefore = 3))
+  activate Model
+  Model --> Food : true
+  deactivate Model
+
+  ' --- recipe 1: WITH basicDishFor ---
+  Food -> Food : serialiseRecipeIngredients(recipeDto = RecipeDto(1, "potato soup", 10,\n["EXEC","VEGETABLE"], ingredients = [("potato","g",300), ("onion","X",1)],\nbasicDishFor = "EUROPEAN"))
+  activate Food #EEEEEE
+  Food -> Model : ingredient("potato")
+  activate Model
+  Model --> Food : Ingredient("potato", G, 1000, bestBefore = 3)
+  deactivate Model
+  Food -> Model : ingredient("onion")
+  activate Model
+  Model --> Food : Ingredient("onion", X, 10, bestBefore = 1)
+  deactivate Model
+  deactivate Food
+  Food -> Food : serialiseRecipe(recipeDto = recipe 1)
+  Food -> Model : registerRecipe(Recipe(1, "potato soup", 10, basicDishFor = EUROPEAN,\ncookType = {EXEC, VEGETABLE}))
+  activate Model
+  Model --> Food : true
+  deactivate Model
+
+  ' --- recipe 2: WITHOUT basicDishFor ---
+  Food -> Food : serialiseRecipeIngredients(recipeDto = RecipeDto(2, "onion rings", 5,\n["EXEC","PASTRY"], ingredients = [("onion","X",2)], basicDishFor = null))
+  activate Food #EEEEEE
+  Food -> Model : ingredient("onion")
+  activate Model
+  Model --> Food : Ingredient("onion", X, 10, bestBefore = 1)
+  deactivate Model
+  deactivate Food
+  Food -> Food : serialiseRecipe(recipeDto = recipe 2)
+  Food -> Model : registerRecipe(Recipe(2, "onion rings", 5, basicDishFor = none,\ncookType = {EXEC, PASTRY}))
+  activate Model
+  Model --> Food : true
+  deactivate Model
+  note right of Food
+    Recipe 1 has basicDishFor = EUROPEAN, recipe 2 has
+    none - this is the "recipe with and without basic
+    dish" the scenario asks for, and it also satisfies
+    "exactly 1 recipe per basic dish name".
+  end note
+
+  deactivate Food
+
+  Food -> Food : validateFileScope()
+  activate Food #DDDDDD
+  Food -> Food : checkBasicDishUniqueness(recipe 1 = EUROPEAN, recipe 2 = none)
+  deactivate Food
+
+  Food --> Loader : true
+  deactivate Food
+
+  Loader -> Log : configParsed("food.json")
+  activate Log
+  Log --> Loader
+  deactivate Log
+end
+
+' =====================================================================
+group Stage 2 - restaurants.json : 1 restaurant, 1 table per table type
+
+  Loader -> Rest : parse("restaurants.json")
+  activate Rest
+
+  Rest -> Val : validateFile("restaurants.json", "restaurants.schema")
+  activate Val
+  Val --> Rest : true
+  deactivate Val
+
+  Rest -> Rest : readEntities("restaurants.json")
+  activate Rest #DDDDDD
+
+  create "restaurantFile:\nRestaurantFileDto" as RestFile
+  Rest -> RestFile : Json.decodeFromString(fileText)
+  activate RestFile
+  RestFile --> Rest : RestaurantFileDto(restaurants = [1 entry])
+  deactivate RestFile
+
+  ' --- restaurant 1: Fire ---
+  Rest -> Rest : resolveRecipes(RestaurantJsonDto(1, "Fire", "EUROPEAN", 1, 24, 1,\nevent = true, positiveRatings = 0, negativeRatings = 0, recipes = [1,2],\nkitchenStaff = {"EXEC":1}, waitstaff = 1, tables = [...]))
+  activate Rest #EEEEEE
+  Rest -> Model : recipe(1)
+  activate Model
+  Model --> Rest : Recipe(1, "potato soup", 10, EUROPEAN)
+  deactivate Model
+  Rest -> Model : recipe(2)
+  activate Model
+  Model --> Rest : Recipe(2, "onion rings", 5, basicDishFor = none)
+  deactivate Model
+  deactivate Rest
+
+
+  Rest -> Rest : serialiseCookCounts(restaurantDto = Fire)
+
+  Rest -> Rest : serialiseTables(restaurantDto = Fire)
+  activate Rest #EEEEEE
+  Rest -> Rest : TableDto(1, "COMMON", 4) -> Table(id = 1, size = 4, type = COMMON, leaves = null)
+  Rest -> Rest : TableDto(2, "BAR", 2) -> Table(id = 2, size = 2, type = BAR, leaves = null)
+  Rest -> Rest : TableDto(3, "SEPARATED", 6) -> Table(id = 3, size = 6, type = SEPARATED, leaves = null)
+  deactivate Rest
+
+  Rest -> Rest : checkAtLeastOneOfEach(restaurantDto = Fire)
+  note right of Rest
+    Spec 2.3.2: "per restaurant there must exist at
+    least one recipe, waiter, table and cook".
+    Fire has 2 recipes, 1 waiter, 3 tables and 1 cook
+    (EXEC), so all four minimums are met.
+  end note
+
+  Rest -> Rest : serialiseRestaurant(restaurantDto = Fire)
+  activate Rest #EEEEEE
+  Rest -> Rest : Restaurant(1, "Fire", EUROPEAN, openingTick = 1, closingTick = 24,\nhostsEvents = true, initialPositiveRatings = 0, initialNegativeRatings = 0)
+  deactivate Rest
+  note right of Rest
+    The DTO's type: String "EUROPEAN" is resolved to
+    the RestaurantType enum here, and the recipes/
+    tables/cook counts resolved above are handed in.
+  end note
+
+  Rest -> Model : registerRestaurant(Fire)
+  activate Model
+  Model --> Rest : true
+  deactivate Model
+
+  deactivate Rest
+
+  Rest -> Rest : validateFileScope()
+  activate Rest #DDDDDD
+
+  Rest -> Model : allRestaurants()
+  activate Model
+  Model --> Rest : list containing Restaurant(1, "Fire", EUROPEAN)
+  deactivate Model
+
+  Rest -> Model : basicDishesFor(EUROPEAN)
+  activate Model
+  Model --> Rest : dish names = {"potato soup"}
+  deactivate Model
+  Rest -> Rest : checkBasicDishCoverage(EUROPEAN, {"potato soup"})
+  note right of Rest
+    Only EUROPEAN is in use among parsed restaurants,
+    and recipe 1 is its basic dish - so the "at least
+    one basic dish per restaurant type in use" rule
+    holds with the single restaurant.
+  end note
+
+  deactivate Rest
+
+  Rest --> Loader : true
+  deactivate Rest
+
+  Loader -> Log : configParsed("restaurants.json")
+  activate Log
+  Log --> Loader
+  deactivate Log
+end
+
+' =====================================================================
+group Stage 3 - scenario.json : 1 customer group per type, 1 incident per type
+
+  Loader -> Scen : parse("scenario.json")
+  activate Scen
+
+  Scen -> Val : validateFile("scenario.json", "scenario.schema")
+  activate Val
+  Val --> Scen : true
+  deactivate Val
+
+  Scen -> Scen : readEntities("scenario.json")
+  activate Scen #DDDDDD
+
+  create "scenarioFile:\nScenarioFileDto" as ScenFile
+  Scen -> ScenFile : Json.decodeFromString(fileText)
+  activate ScenFile
+  ScenFile --> Scen : ScenarioFileDto(customers = [3 entries], incidents = [4 entries])
+  deactivate ScenFile
+  note right of Scen
+    "customer per customer type" - one REGULAR, one
+    CASUAL, one EVENT. serialiseCustomerGroup dispatches
+    on groupDto.type to serialiseRegularGroup /
+    serialiseCasualGroup / serialiseEventGroup.
+  end note
+
+  ' ---------------- customer group 1: REGULAR ----------------
+  Scen -> Scen : serialiseFoodPreferences(CustomerGroupJsonDto(1, "REGULAR", 2, "COMMON",\nvisitingTick = 4, foodPreferences = [], visitingStart = 1, visitingPeriod = 1, restaurant = 1))
+  note right of Scen
+    Empty foodPreferences, so the per-preference
+    checks inside serialiseFoodPreferences do not run.
+  end note
+
+  Scen -> Scen : serialiseRegularGroup(groupDto = group 1)
+  Scen -> Scen : checkRegularRestaurantExists(g = group 1, restaurantId = 1)
+  activate Scen #EEEEEE
+  Scen -> Model : restaurant(1)
+  activate Model
+  Model --> Scen : Restaurant(1, "Fire", EUROPEAN)
+  deactivate Model
+  deactivate Scen
+
+  Scen -> Scen : serialiseCustomerGroup(groupDto = group 1)
+  Scen -> Scen : checkPreferenceSizes(g = group 1, groupSize = 2, sumOfPreferenceSizes = 0)
+  Scen -> Model : registerCustomerGroup(group 1)
+  activate Model
+  Model --> Scen : true
+  deactivate Model
+
+  ' ---------------- customer group 2: CASUAL (delivery) ----------------
+  Scen -> Scen : serialiseFoodPreferences(CustomerGroupJsonDto(2, "CASUAL", 1, "BAR",\nvisitingTick = 6, foodPreferences = [FoodPreferenceDto(1, excludedIngredients = ["onion"])],\nrestaurantTypes = ["EUROPEAN"], visitingEvenings = [1], deliveryDistance = 10,\nratingLikelihood = "SOME"))
+  activate Scen #EEEEEE
+
+  Scen -> Model : ingredient("onion")
+  activate Model
+  Model --> Scen : Ingredient("onion", X, 10, bestBefore = 1)
+  deactivate Model
+
+  Scen -> Model : allIngredientNames()
+  activate Model
+  Model --> Scen : {"onion", "potato"}
+  deactivate Model
+
+  deactivate Scen
+
+  Scen -> Scen : serialiseCasualGroup(groupDto = group 2)
+  Scen -> Scen : checkDeliveryOrderTick(g = group 2, visitingTick = 6, deliveryDistance = 10)
+  note right of Scen
+    Travel ticks = ceil(10 / 5) = 2.
+    Order tick = visitingTick - travelTicks - 3
+               = 6 - 2 - 3 = 1, within the serving
+    phase, so the delivery timing is valid.
+  end note
+
+  Scen -> Scen : serialiseCustomerGroup(groupDto = group 2)
+  Scen -> Scen : checkPreferenceSizes(g = group 2, groupSize = 1, sumOfPreferenceSizes = 1)
+  Scen -> Model : registerCustomerGroup(group 2)
+  activate Model
+  Model --> Scen : true
+  deactivate Model
+
+  ' ---------------- customer group 3: EVENT ----------------
+  Scen -> Scen : serialiseFoodPreferences(CustomerGroupJsonDto(3, "EVENT", 4, "SEPARATED",\nvisitingTick = 4, foodPreferences = [], restaurantTypes = ["EUROPEAN"],\neventEvening = 4, favoriteDishes = {"EUROPEAN": "potato soup"}))
+
+  Scen -> Scen : serialiseEventGroup(groupDto = group 3)
+  activate Scen #EEEEEE
+  Scen -> Scen : checkEventFavouriteDishPerType(g = group 3)
+  activate Scen #F8F8F8
+  Scen -> Model : basicDishesFor(EUROPEAN)
+  activate Model
+  Model --> Scen : {"potato soup"}
+  deactivate Model
+  deactivate Scen
+  deactivate Scen
+  note right of Scen
+    **Post-change validation (spec 2.3.2):** "Event
+    customer groups need a favorite dish for every
+    restaurant type they consider visiting."
+    Group 3 considers only EUROPEAN and maps
+    EUROPEAN -> "potato soup", which is a real basic
+    dish, so this passes.
+
+    size 4 is the EVENT minimum ([4;100], vs
+    REGULAR/CASUAL's [1;10]); eventEvening = 4 is the
+    earliest legal event evening, since events reserve
+    three evenings ahead.
+  end note
+
+  Scen -> Scen : serialiseCustomerGroup(groupDto = group 3)
+  Scen -> Scen : checkPreferenceSizes(g = group 3, groupSize = 4, sumOfPreferenceSizes = 0)
+  Scen -> Model : registerCustomerGroup(group 3)
+  activate Model
+  Model --> Scen : true
+  deactivate Model
+
+  ' ---------------- one incident per IncidentType ----------------
+  Scen -> Scen : serialiseStaffChange(incidentDto = IncidentJsonDto(1, "STAFF", evening = 1,\nrestaurant = 1, number = 1, staffType = "COOK", cookType = "SOUS"))
+  activate Scen #EEEEEE
+  Scen -> Model : restaurant(1)
+  activate Model
+  Model --> Scen : Restaurant(1, "Fire", EUROPEAN)
+  deactivate Model
+  deactivate Scen
+  Scen -> Scen : serialiseIncident(incidentDto = incident 1)
+  Scen -> Model : registerIncident(StaffChange(1, restaurant = 1, number = 1,\nstaffType = COOK, cookType = SOUS))
+  activate Model
+  Model --> Scen : true
+  deactivate Model
+
+  Scen -> Scen : serialiseRecipeChange(incidentDto = IncidentJsonDto(2, "RECIPE", evening = 1,\ningredient = "onion", adaptation = 3))
+  activate Scen #EEEEEE
+  Scen -> Model : ingredient("onion")
+  activate Model
+  Model --> Scen : Ingredient("onion", X, 10, bestBefore = 1)
+  deactivate Model
+  deactivate Scen
+  Scen -> Scen : serialiseIncident(incidentDto = incident 2)
+  Scen -> Model : registerIncident(RecipeChange(2, ingredient = "onion", adaptation = 3))
+  activate Model
+  Model --> Scen : true
+  deactivate Model
+
+  Scen -> Scen : serialisePackagingChange(incidentDto = IncidentJsonDto(3, "PACKAGING",\nevening = 1, ingredient = "onion", packagingVolume = 20))
+  activate Scen #EEEEEE
+  Scen -> Model : ingredient("onion")
+  activate Model
+  Model --> Scen : Ingredient("onion", X, 10, bestBefore = 1)
+  deactivate Model
+  deactivate Scen
+  Scen -> Scen : serialiseIncident(incidentDto = incident 3)
+  Scen -> Model : registerIncident(PackagingChange(3, ingredient = "onion", packagingVolume = 20))
+  activate Model
+  Model --> Scen : true
+  deactivate Model
+
+  Scen -> Scen : serialiseIngredientUnavailability(incidentDto = IncidentJsonDto(4,\n"UNAVAILABLE", evening = 1, ingredient = "onion", duration = 2))
+  activate Scen #EEEEEE
+  Scen -> Model : ingredient("onion")
+  activate Model
+  Model --> Scen : Ingredient("onion", X, 10, bestBefore = 1)
+  deactivate Model
+  deactivate Scen
+  Scen -> Scen : serialiseIncident(incidentDto = incident 4)
+  Scen -> Model : registerIncident(IngredientUnavailability(4, ingredient = "onion", duration = 2))
+  activate Model
+  Model --> Scen : true
+  deactivate Model
+
+  deactivate Scen
+
+  Scen -> Scen : validateFileScope()
+  activate Scen #DDDDDD
+  Scen -> Scen : checkUnavailabilityOverlap(incidents = [IngredientUnavailability(4, "onion", duration = 2)])
+  deactivate Scen
+  note right of Scen
+    Only one UNAVAILABLE incident, so there is nothing
+    to overlap with - the rule holds trivially.
+  end note
+
+  Scen --> Loader : true
+  deactivate Scen
+
+  Loader -> Log : configParsed("scenario.json")
+  activate Log
+  Log --> Loader
+  deactivate Log
+end
+
+' =====================================================================
+Loader -> Loader : buildSimulator()
+activate Loader #DDDDDD
+
+Loader -> Model : allRestaurants()
+activate Model
+Model --> Loader : [Restaurant(1, "Fire", EUROPEAN)]
+deactivate Model
+
+Loader -> Model : allCustomerGroups()
+activate Model
+Model --> Loader : [group 1 REGULAR, group 2 CASUAL, group 3 EVENT]
+deactivate Model
+
+Loader -> Model : allIncidents()
+activate Model
+Model --> Loader : [StaffChange(1), RecipeChange(2), PackagingChange(3), IngredientUnavailability(4)]
+deactivate Model
+
+create "ratings:\nRatingBook" as RB
+Loader -> RB : RatingBook()
+activate RB
+RB --> Loader : ratings
+deactivate RB
+
+Loader -> RB : seed(1, positive = 0, negative = 0)
+activate RB
+RB --> Loader
+deactivate RB
+
+create "sim:\nSimulator" as Sim
+Loader -> Sim : Simulator(restaurants, customerGroups, incidents, ratings, maxTicks = 0)
+activate Sim
+Sim --> Loader : sim
+deactivate Sim
+deactivate Loader
+
+Loader --> Main : sim
+deactivate Loader
+
+' =====================================================================
+' Termination: maxTicks = 0, so no evening and no tick ever runs.
+' =====================================================================
+Main -> Sim : run()
+activate Sim
+
+Sim -> Log : simulationStarted()
+activate Log
+Log --> Sim
+deactivate Log
+
+note right of Sim
+  **maxTicks = 0.** globalTick starts at 1 and the
+  run loop's guard (globalTick <= maxTicks) is false
+  immediately, so runEvening()/runTick() are never
+  entered: no preparation phase, no serving phase,
+  no incident is ever applied, no restaurant ticks.
+
+  Per spec 2.3.2, 0 IS a multiple of 24, so the run
+  ends "with the serving phase" - the log continues
+  straight to the statistics block, and no next
+  evening's preparation is started.
+end note
+
+Sim -> Log : statisticsCalculated()
+activate Log
+Log --> Sim
+deactivate Log
+
+Sim -> Log : statMealsCooked(restaurantId = 1, meals = 0)
+activate Log
+Log --> Sim
+deactivate Log
+Sim -> Log : statCustomersServed(restaurantId = 1, customers = 0)
+activate Log
+Log --> Sim
+deactivate Log
+Sim -> Log : statCustomersDelivered(restaurantId = 1, customers = 0)
+activate Log
+Log --> Sim
+deactivate Log
+Sim -> Log : statRatings(restaurantId = 1, ratings = 0)
+activate Log
+Log --> Sim
+deactivate Log
+note right of Sim
+  Statistics are still emitted, one block per
+  restaurant in ascending id - all counters are 0
+  because nothing was ever cooked, served, delivered
+  or rated. This is what "until the program
+  terminates" produces for maxTicks = 0.
+end note
+
+Sim --> Main
+deactivate Sim
+
+deactivate Main
+[<- Main : exit
+deactivate Main
+
+@enduml

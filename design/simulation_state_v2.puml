@@ -1,0 +1,217 @@
+@startuml simulation_state_v2
+title Saar la Carte - Simulation State Diagram (v2, configuration files unread to end of simulation)
+
+hide empty description
+skinparam state {
+  BackgroundColor<<phase>>   #EAF4FB
+  BackgroundColor<<config>>  #EAFBEA
+  BackgroundColor<<setup>>   #FFF6E0
+  BackgroundColor<<end>>     #FBEAEA
+  BorderColor                #555555
+}
+
+' ============================================================
+'  The simulation itself: configuration, then one iteration per
+'  evening, each of 24 ticks of six ordered steps.
+'
+'  States carry their name only. Every guard and every action
+'  uses the names in class_diagram.puml, so the two diagrams
+'  can be read together.
+' ============================================================
+
+[*] --> Unconfigured
+
+state "Unconfigured" as Unconfigured <<config>>
+
+Unconfigured --> LoadingConfiguration : main(args)\nSimulationParameters.fromArgs(args)\n/ ConfigurationLoader.load(params)
+
+state "Loading Configuration" as LoadingConfiguration <<config>> {
+
+  [*] --> ParsingFood
+
+  state "Stage 1 - Food file" as ParsingFood {
+    [*] --> Food_Schema
+    state "Schema validation" as Food_Schema
+
+    state "Reading entities" as Food_Read
+
+    state "File-scope rules" as Food_Scope
+
+    Food_Schema --> Food_Read   : [file matches schema]
+    Food_Read   --> Food_Scope  : [every entity built and registered]
+    Food_Scope  --> [*]         : ParseResult(valid = true)
+  }
+
+  state "Stage 2 - Restaurants file" as ParsingRestaurants {
+    [*] --> Rest_Schema
+    state "Schema validation" as Rest_Schema
+
+    state "Reading entities" as Rest_Read
+
+    state "File-scope rules" as Rest_Scope
+
+    Rest_Schema --> Rest_Read  : [file matches schema]
+    Rest_Read   --> Rest_Scope : [every restaurant built and registered]
+    Rest_Scope  --> [*]        : ParseResult(valid = true)
+  }
+
+  state "Stage 3 - Scenario file" as ParsingScenario {
+    [*] --> Scen_Schema
+    state "Schema validation" as Scen_Schema
+
+    state "Reading customer groups" as Scen_Groups
+
+    state "Reading incidents" as Scen_Incidents
+
+    state "File-scope rules" as Scen_Scope
+
+    Scen_Schema    --> Scen_Groups    : [file matches schema]
+    Scen_Groups    --> Scen_Incidents : [every group built and registered]
+    Scen_Incidents --> Scen_Scope     : [every incident built and registered]
+    Scen_Scope     --> [*]            : ParseResult(valid = true)
+  }
+
+  ParsingFood        --> ParsingRestaurants : runStage returned true
+  ParsingRestaurants --> ParsingScenario    : runStage returned true
+  ParsingScenario    --> [*]                : all three stages valid
+}
+
+
+' --- every way configuration can fail; load() stops at the first invalid file ---
+Food_Schema    --> ConfigurationRejected : [schema mismatch] / ParseResult(failedRule)
+Food_Read      --> ConfigurationRejected : [unresolvable reference or duplicate id]
+Food_Scope     --> ConfigurationRejected : [file-scope rule violated]
+Rest_Schema    --> ConfigurationRejected : [schema mismatch]
+Rest_Read      --> ConfigurationRejected : [unresolvable recipe reference]
+Rest_Scope     --> ConfigurationRejected : [file-scope rule violated]
+Scen_Schema    --> ConfigurationRejected : [schema mismatch]
+Scen_Groups    --> ConfigurationRejected : [unresolvable ingredient or dish name]
+Scen_Incidents --> ConfigurationRejected : [unknown incident type or target]
+Scen_Scope     --> ConfigurationRejected : [file-scope rule violated]
+
+state "Configuration Rejected" as ConfigurationRejected
+ConfigurationRejected -[#blue]-> [*]
+
+LoadingConfiguration --> BuildingSimulator : [all three ParseResults valid]
+
+state "Building Simulator" as BuildingSimulator <<config>>
+
+BuildingSimulator --> SimulationReady
+
+state "Simulation Ready" as SimulationReady <<config>>
+SimulationReady --> Running : Simulator.run()\n/ Logger.important(Simulation started)
+
+' ============================================================
+'  RUNNING - one iteration per evening
+' ============================================================
+
+state "Running" as Running {
+
+  [*] --> EveningSetup
+
+  ' ---------- before the doors open ----------
+  state "Evening Setup" as EveningSetup <<setup>> {
+
+    [*] --> ApplyingIncidents
+
+    state "Applying incidents" as ApplyingIncidents
+
+    state "Preparing restaurants" as PreparingRestaurants {
+      [*] --> ResettingForEvening
+
+      state "Resetting" as ResettingForEvening
+
+      state "Reserving tables" as ReservingTables
+
+      state "Planning the evening" as PlanningDishes
+
+      state "Procuring ingredients" as ProcuringIngredients
+
+      state "Publishing browser data" as PublishingBrowserData
+
+      ResettingForEvening   --> ReservingTables
+      ReservingTables       --> PlanningDishes : reservations decide what counts as other seats
+      PlanningDishes        --> ProcuringIngredients
+      ProcuringIngredients  --> PublishingBrowserData
+      PublishingBrowserData --> [*]
+    }
+
+    ApplyingIncidents    --> PreparingRestaurants : restaurants prepare in ascending id
+    PreparingRestaurants --> [*]
+  }
+
+  EveningSetup --> Evening : Logger.important(Serving of evening n starts)\n/ tickInEvening = 1
+
+  ' ---------- the evening itself, 24 ticks ----------
+  state "Evening" as Evening {
+
+    [*] --> Tick
+
+    state "Tick" as Tick {
+      [*] --> TickOpen
+
+      state "Start of tick" as TickOpen <<phase>>
+
+      state "Choosing restaurants" as ChoosingRestaurants <<phase>>
+
+      TickOpen --> ChoosingRestaurants
+
+      state open_c <<choice>>
+      ChoosingRestaurants --> open_c : then every restaurant ticks, ascending id
+      open_c --> ArrivalsAndOrdering : [Restaurant.isOpen(tick)]\n/ FrontOfTheHouse.startTick(tick)
+      open_c --> OpeningTimeEnded    : [opening time just ended]
+      open_c --> ClosedThisTick      : [closed]
+
+      state "Closing time" as OpeningTimeEnded <<phase>>
+      OpeningTimeEnded --> ClosedThisTick
+
+      state "Restaurant closed" as ClosedThisTick <<phase>>
+      ClosedThisTick --> TickClose
+
+      state "1. Arrivals, seating and ordering" as ArrivalsAndOrdering <<phase>>
+
+      state "2. Kitchen" as KitchenCooking <<phase>>
+
+      state "3. Serving" as ServingStep <<phase>>
+
+      state "4. Delivering" as DeliveringStep <<phase>>
+
+      state "5. Eating" as EatingStep <<phase>>
+
+      state "6. Escorting" as EscortingStep <<phase>>
+
+      state "End of tick" as TickClose <<phase>>
+
+      ArrivalsAndOrdering --> KitchenCooking
+      KitchenCooking      --> ServingStep
+      ServingStep         --> DeliveringStep
+      DeliveringStep      --> EatingStep
+      EatingStep          --> EscortingStep
+      EscortingStep       --> TickClose
+      TickClose           --> [*]
+    }
+
+    state tick_c <<choice>>
+    Tick --> tick_c
+    tick_c --> Tick : [tickInEvening < 24\nand globalTick < maxTicks] / tickInEvening++
+    tick_c --> [*]  : [tickInEvening == 24\nor globalTick == maxTicks]
+  }
+
+  Evening --> EveningTeardown
+
+  state "Evening Teardown" as EveningTeardown <<setup>>
+
+  state evening_c <<choice>>
+  EveningTeardown --> evening_c
+  evening_c --> EveningSetup : [globalTick < maxTicks] / evening++
+  evening_c --> [*]          : [globalTick == maxTicks]
+}
+
+
+Running --> Reporting
+
+state "Reporting" as Reporting
+Reporting -[#blue]-> [*]
+
+
+@enduml

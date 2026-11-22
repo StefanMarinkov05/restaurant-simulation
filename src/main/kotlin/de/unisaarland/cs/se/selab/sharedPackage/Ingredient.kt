@@ -1,0 +1,64 @@
+package de.unisaarland.cs.se.selab.sharedPackage
+
+/**
+ * One kind of ingredient the supplier sells and the restaurants cook with.
+ *
+ * The packaging volume is mutable because a PACKAGING incident changes it globally; the object is
+ * shared by every recipe that uses the ingredient, so the change reaches all of them at once.
+ */
+class Ingredient(
+    val name: String,
+    val unit: UnitType,
+    packagingVolume: Int,
+    var bestUntil: Int,
+) {
+    /** The base amount in which the ingredient can be obtained from the supplier. */
+    var packagingVolume: Int = packagingVolume
+        private set
+
+    private val usages = mutableListOf<RecipeIngredient>()
+
+    /**
+     * Every recipe entry of the simulation that requires this ingredient, across all recipes of all
+     * restaurants. A RECIPE incident adapts exactly these entries.
+     */
+    fun usages(): List<RecipeIngredient> = usages
+
+    /**
+     * Records that [usage] requires this ingredient; every [RecipeIngredient] registers itself here.
+     */
+    internal fun addUsage(usage: RecipeIngredient) {
+        usages.add(usage)
+    }
+
+    /**
+     * The number of whole packages needed to cover [amount] of this ingredient.
+     */
+    fun packagesFor(amount: Int): Int {
+        if (amount <= 0) {
+            return 0
+        }
+        return (amount + packagingVolume - 1) / packagingVolume
+    }
+
+    /**
+     * Applies a PACKAGING incident by setting the packaging volume to [newVolume].
+     */
+    fun changePackaging(newVolume: Int) {
+        if (newVolume > 0) {
+            packagingVolume = newVolume
+        }
+    }
+
+    /**
+     * reduces the best until date to help pantry's check of the date
+     */
+    fun reduceBestUntil(): Boolean {
+        if (bestUntil > 0) {
+            bestUntil--
+            return true
+        } else {
+            return false
+        }
+    }
+}

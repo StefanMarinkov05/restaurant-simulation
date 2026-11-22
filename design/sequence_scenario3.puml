@@ -1,0 +1,613 @@
+@startuml sequence_scenario3
+title Scenario 3 - Evening 35, Tick 6, Restaurant FIRE (id 1)
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 260
+skinparam ParticipantPadding 4
+skinparam BoxPadding 6
+
+' ============================================================
+'  Listing A.1 + A.2 state at the start of tick 6
+'
+'  FIRE (id 1, EUROPEAN, ticks 1-24): waitstaff 2, TOURNANT 1,
+'  drivers 3, tables 2(9) 3(2) 4(3) 5(3) 6(8), ratings 10/5.
+'  Recipes: 1 chicken rice d30 ASIAN, 2 beef pasta d25,
+'           3 potato soup d10 EUROPEAN.
+'  durationInTicks = ceil(duration/10) - 1
+'           -> chicken rice 2, beef pasta 2, potato soup 0
+'
+'  Group 1  CASUAL size 8, arrived tick 1, table 3 merged 4+5.
+'           Ordered 2 chicken rice + 6 potato soup in tick 1.
+'           Soup served tick 3, rice served tick 4.
+'           Eating takes 2 full ticks -> finishes in tick 6.
+'  Group 6  EVENT size 16, eventEvening 35, arrived tick 4,
+'           table 2 merged 6, all 16 ordered beef pasta.
+'           favoriteDishes EUROPEAN -> potato soup, but all 16
+'           exclude chicken and potato, so accepts() drops the
+'           event favorite and they fall through to beef pasta.
+'           Cook started the batch in tick 4 -> ready in tick 6.
+' ============================================================
+
+participant "sim:Simulator" as SIM
+participant "GlobalClock" as CLK
+participant "browsing:\nBrowsingService" as BR
+participant "r1:Restaurant" as R
+participant "foh:\nFrontOfTheHouse" as FOH
+participant "waitstaff:\nWaiterAssignmentService" as WAS
+participant "kitchen:Kitchen" as K
+participant "roster:CookRoster" as ROS
+participant "cook1:Cook" as COOK
+participant "pantry:Pantry" as PAN
+participant "menu:Menu" as MENU
+participant "serving:\nServingService" as SRV
+participant "dining:\nDiningService" as DIN
+participant "deliveryDesk:\nDeliveryDesk" as DD
+participant "escorting:\nEscortingService" as ESC
+participant "rating:\nRatingService" as RAT
+participant "tables:TableAssign\nmentService" as TAS
+participant "v1:Visit" as V1
+participant "v6:Visit" as V6
+participant "g1:CasualCustomerGroup" as G1
+participant "c1:Customer" as C1
+participant "w1:Waiter" as W1
+participant "w2:Waiter" as W2
+participant "book:RatingBook" as RB
+participant "stats:Statistics" as ST
+participant "Logger" as LOG
+
+[-> SIM : runTick()
+activate SIM
+
+SIM -> LOG : tickStarted(6, 6)
+activate LOG
+note right of LOG
+  [IMPORTANT] Simulation: Tick 6 (6) started.
+end note
+LOG -[#blue,dashed]> SIM : Unit
+deactivate LOG
+
+' ---------- browsing refresh ----------
+SIM -> R : snapshot()
+activate R
+R --> SIM : rd1:RestaurantData
+deactivate R
+SIM -> BR : refresh([rd1])
+activate BR
+BR -[#blue,dashed]> SIM : Unit
+deactivate BR
+
+' ---------- restaurant decision ----------
+group Restaurant Decision  (EVENT then CASUAL, then ascending id)
+  note over SIM
+    No group decides in this tick. Group 6 booked FIRE in
+    tick 1 of evening 32 through chooseForEvent(); groups 1
+    and 5 have visitingEvenings that do not include 35.
+  end note
+end
+
+SIM -> LOG : restaurantStart(1)
+activate LOG
+note right of LOG
+  [DEBUG] Restaurant Start (R 1): Restaurant 1 simulates a tick.
+end note
+LOG -[#blue,dashed]> SIM : Unit
+deactivate LOG
+
+SIM -> R : subunit()
+activate R
+R --> SIM : ctx:SubUnits
+deactivate R
+
+SIM -> FOH : beginTick(6)
+activate FOH
+FOH -[#blue]> WAS : beginTick()
+activate WAS
+WAS -> W1 : beginTick()
+activate W1
+W1 -[#blue,dashed]> WAS : Unit
+deactivate W1
+WAS -> W2 : beginTick()
+activate W2
+W2 -[#blue,dashed]> WAS : Unit
+deactivate W2
+WAS -[#blue,dashed]> FOH : Unit
+deactivate WAS
+note right of FOH
+  tickLoad cleared for both waiters, currentLoad kept.
+  Group 6 is an EVENT, so its 16 customers were never
+  added to any waiter's currentLoad.
+end note
+FOH -[#blue,dashed]> SIM : Unit
+deactivate FOH
+
+' ============================================================
+group 1. Customer arrivals, seating and ordering
+  SIM -[#blue]> FOH : callSeatingService([])
+  activate FOH
+  note right of FOH
+    No group arrives in tick 6, so SeatingService is not invoked.
+    The seating status still reports zero.
+  end note
+  FOH -> LOG : seatingStatus(1, 0, 0, 0)
+  activate LOG
+  LOG -[#blue,dashed]> FOH : Unit
+  deactivate LOG
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+
+  SIM -[#blue]> FOH : callOrderingService()
+  activate FOH
+  note right of FOH
+    No visit is awaiting an order in tick 6, so OrderingService
+    performs no order action. The ordering status reports zero.
+  end note
+  FOH -> LOG : orderingStatus(1, 0, 0)
+  activate LOG
+  LOG -[#blue,dashed]> FOH : Unit
+  deactivate LOG
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+
+  note right of LOG
+    [DEBUG] FOH Seating Status (R 1): 0 waitstaff seated
+            0 customers on 0 tables.
+    [DEBUG] FOH Ordering Status (R 1): The restaurant received
+            orders from 0 customers, 0 waitstaff took orders.
+  end note
+end
+
+' ============================================================
+group 2. Kitchen scheduling and cooking
+  SIM -> K : cook()
+  activate K
+
+  note right of K
+    The queue is empty: order 2 (16 beef pasta for group 6)
+    was assigned to cook 1 back in tick 4, so nothing new is
+    claimed here.
+  end note
+
+  K -> ROS : finished(6)
+  activate ROS
+  ROS -> COOK : isFree(6)
+  activate COOK
+  COOK --> ROS : true
+  deactivate COOK
+  ROS -> COOK : endCooking(6)
+  activate COOK
+  note right of COOK
+    beef pasta durationInTicks() = ceil(25/10) - 1 = 2.
+    Started tick 4, so the whole 16 meal batch finishes now.
+    One cook cooks every queued meal of a dish across all
+    orders in a single batch with no extra duration.
+  end note
+  COOK --> ROS : [16 x Meal beef pasta]
+  deactivate COOK
+  ROS --> K : [16 x Meal]
+  deactivate ROS
+
+  K -> LOG : mealCooked(1, 1, 16, "beef pasta", 2)
+  activate LOG
+  note right of LOG
+    [IMPORTANT] Kitchen Meal Cooked (R 1): Cook 1 finished
+    cooking 16 meals of dish beef pasta 2 ticks after ordering.
+    (Order.ticksSince(6) with placedTick 4)
+  end note
+  LOG -[#blue,dashed]> K : Unit
+  deactivate LOG
+
+  K -> ST : recordCooked(1, 16)
+  activate ST
+  ST -[#blue,dashed]> K : Unit
+  deactivate ST
+  K -> LOG : kitchenStatus(1, 1, 16, 16, 16)
+  activate LOG
+  note right of LOG
+    [DEBUG] Kitchen Status (R 1): 1 cooks were active cooking
+    16 and finishing 16 meals. 16 meals can be served by the
+    waitstaff.
+  end note
+  LOG -[#blue,dashed]> K : Unit
+  deactivate LOG
+  K --> SIM : [16 x Meal]
+  deactivate K
+
+  SIM -> MENU : refresh()
+  activate MENU
+  MENU -> PAN : canCover(r)
+  activate PAN
+  PAN -[#blue,dashed]> MENU : Boolean
+  deactivate PAN
+  MENU -> K : canCook(r)
+  activate K
+  K -[#blue,dashed]> MENU : Boolean
+  deactivate K
+  note right of MENU
+    A dish is orderable when its ingredients are in the pantry
+    and unreserved AND at least one eligible cook exists.
+    Cooking consumed the reserved beef and pasta, so the
+    orderable list is recomputed here.
+  end note
+  MENU -[#blue,dashed]> SIM : Unit
+  deactivate MENU
+
+  SIM -[#blue]> FOH : mealsReady([16 x Meal])
+  activate FOH
+  FOH -> V6 : mealCooked(m, 6)
+  activate V6
+  note right of V6
+    AwaitingMeals.onMealCooked sets firstMealTick = 6 and,
+    since all 16 meals of the order are now COOKED,
+    Order.allCooked() is true.
+  end note
+  V6 -[#blue,dashed]> FOH : Unit
+  deactivate V6
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+' ============================================================
+group 3. Serving
+  SIM -[#blue]> FOH : callServingService()
+  activate FOH
+
+  FOH -[#blue]> V6 : pending(SERVING, 6)
+  activate V6
+  V6 -[#blue,dashed]> FOH : 16
+  deactivate V6
+  FOH -[#blue]> V1 : pending(SERVING, 6)
+  activate V1
+  V1 -[#blue,dashed]> FOH : 0
+  deactivate V1
+
+  note right of FOH
+    callServingService() checks the existing visits first.
+    Only v6 currently requires SERVING; because it is an EVENT,
+    FOH requests a fresh action-specific waiter assignment.
+  end note
+
+  FOH -[#blue]> WAS : assignEvent(v6, SERVING)
+  activate WAS
+  note right of WAS
+    EVENT waitstaff is selected again for the current action.
+    This assignment is action-specific and is not retained as
+    a permanent waiter assignment for group 6.
+  end note
+  WAS -[#blue,dashed]> FOH : Unit
+  deactivate WAS
+
+  FOH -> SRV : serve([v6], [w1, w2], ctx)
+  activate SRV
+
+  note over SRV
+    Group 6 is the only visit requiring SERVING in this tick.
+  end note
+
+  note over SRV
+    Event serving rule: the table has had no meal yet and the
+    meals have not waited. assignEvent(v6, SERVING) therefore
+    selected as many waiters as needed from the whole waitstaff
+    according to the EVENT serving priority. ServingService now
+    performs the action with that action-specific assignment.
+  end note
+
+  SRV -> W1 : remaining(SERVING)
+  activate W1
+  W1 --> SRV : 10
+  deactivate W1
+  SRV -> V6 : serve(10, 6)
+  activate V6
+  V6 --> SRV : [10 x Meal]
+  deactivate V6
+  SRV -> W1 : consume(SERVING, 10)
+  activate W1
+  W1 -[#blue,dashed]> SRV : Unit
+  deactivate W1
+  SRV -> LOG : serving(1, 1, {"beef pasta":10}, 2, 2)
+  activate LOG
+  note right of LOG
+    [IMPORTANT] FOH Serving (R 1): Waitstaff 1 serves
+    beef pasta:10 to table 2 2 ticks after ordering.
+    Table 2 is the merged id, the lowest of tables 2 and 6.
+  end note
+  LOG -[#blue,dashed]> SRV : Unit
+  deactivate LOG
+
+  SRV -> W2 : remaining(SERVING)
+  activate W2
+  W2 --> SRV : 10
+  deactivate W2
+  SRV -> V6 : serve(6, 6)
+  activate V6
+  V6 --> SRV : [6 x Meal]
+  deactivate V6
+  SRV -> W2 : consume(SERVING, 6)
+  activate W2
+  W2 -[#blue,dashed]> SRV : Unit
+  deactivate W2
+  SRV -> LOG : serving(1, 2, {"beef pasta":6}, 2, 2)
+  activate LOG
+  note right of LOG
+    [IMPORTANT] FOH Serving (R 1): Waitstaff 2 serves
+    beef pasta:6 to table 2 2 ticks after ordering.
+  end note
+  LOG -[#blue,dashed]> SRV : Unit
+  deactivate LOG
+
+  note right of SRV
+    Group 1 was fully served in tick 4, so FOH filtered it out
+    before invoking ServingService.
+  end note
+
+  SRV -> LOG : servingStatus(1, 2, 16)
+  activate LOG
+  note right of LOG
+    [DEBUG] FOH Serving Status (R 1): 2 waitstaff served
+    16 meals.
+  end note
+  LOG -[#blue,dashed]> SRV : Unit
+  deactivate LOG
+  SRV -[#blue,dashed]> FOH : Unit
+  deactivate SRV
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+' ============================================================
+group 4. Delivering
+  SIM -[#blue]> FOH : callDeliveryDesk()
+  activate FOH
+  FOH -[#blue]> DD : send()
+  activate DD
+  note right of DD
+    All three drivers are idle. Neither group 1 nor group 6
+    is a delivery, so send() emits no delivery logs.
+  end note
+  DD -[#blue,dashed]> FOH : Unit
+  deactivate DD
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+' ============================================================
+group 5. Eating
+  SIM -[#blue]> FOH : callDiningService()
+  activate FOH
+  FOH -[#blue]> DIN : eat([v1, v6], ctx)
+  activate DIN
+
+  note over DIN
+    Ordered by group type then group id: EVENT group 6 before
+    CASUAL group 1.
+  end note
+
+  DIN -[#blue]> V6 : advance(6)
+  activate V6
+  note right of V6
+    Visit.advance() delegates the tick update to
+    VisitState.onTickElapsed(). Group 6 was served this tick,
+    so its 16 customers start eating and nothing finishes yet.
+    leftUnservedThisTick = 0 and finishedEatingThisTick = 0.
+  end note
+  V6 -[#blue,dashed]> DIN : Unit
+  deactivate V6
+
+  DIN -[#blue]> V1 : advance(6)
+  activate V1
+  loop each customer of group 1
+    V1 -[#blue]> C1 : isDoneEating(6)
+    activate C1
+    C1 -[#blue,dashed]> V1 : true
+    deactivate C1
+  end
+  note right of V1
+    Group 1's last meal arrived in tick 4 and eating takes 2
+    full ticks, so all 8 customers finish now and the visit
+    moves to ReadyToLeave. finishedEatingThisTick = 8.
+  end note
+  V1 -[#blue,dashed]> DIN : Unit
+  deactivate V1
+
+  DIN -> LOG : finishedEating(1, 8, 1, 3)
+  activate LOG
+  note right of LOG
+    [INFO] FOH Finished Eating (R 1): 8 customers of group 1
+    have finished eating at table 3.
+  end note
+  LOG -[#blue,dashed]> DIN : Unit
+  deactivate LOG
+  DIN -> LOG : eatingStatus(1, 16, 8)
+  activate LOG
+  note right of LOG
+    [DEBUG] FOH Eating Status (R 1): 16 customers are eating
+    and 8 customers have finished eating this tick.
+  end note
+  LOG -[#blue,dashed]> DIN : Unit
+  deactivate LOG
+  DIN -[#blue,dashed]> FOH : Unit
+  deactivate DIN
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+' ============================================================
+group 6. Escorting customers
+  SIM -[#blue]> FOH : callEscortingService()
+  activate FOH
+  FOH -[#blue]> V6 : pending(ESCORTING, 6)
+  activate V6
+  V6 -[#blue,dashed]> FOH : 0
+  deactivate V6
+  FOH -[#blue]> V1 : pending(ESCORTING, 6)
+  activate V1
+  V1 -[#blue,dashed]> FOH : 8
+  deactivate V1
+
+  note right of FOH
+    callEscortingService() checks the visits before delegating.
+    v6 needs no ESCORTING yet; v1 does, and as a CASUAL group
+    keeps its permanent waiter assignment.
+  end note
+
+  FOH -[#blue]> ESC : escort([v1], ctx)
+  activate ESC
+
+  ESC -> W1 : remaining(ESCORTING)
+  activate W1
+  W1 --> ESC : 10
+  deactivate W1
+  note right of ESC
+    Group 1 is CASUAL, so its assigned waiter escorts it.
+    Waiter 1 has a full ESCORTING budget this tick, since
+    the 16 SERVING actions came out of a different counter.
+  end note
+  ESC -> V1 : escort(8, 6)
+  activate V1
+  V1 --> ESC : 8
+  deactivate V1
+  ESC -> W1 : consume(ESCORTING, 8)
+  activate W1
+  W1 -[#blue,dashed]> ESC : Unit
+  deactivate W1
+  ESC -> W1 : adjustLoad(-8)
+  activate W1
+  W1 -[#blue,dashed]> ESC : Unit
+  deactivate W1
+
+  ESC -> TAS : release(t3)
+  activate TAS
+  TAS -> TAS : splitAllMerged()
+  activate TAS
+  note right of TAS
+    Table 3 was merged with 4 and 5 for group 1. Group 1 is
+    CASUAL so the table was never reserved, and it goes back
+    to FREE and splits into 3, 4 and 5.
+  end note
+  TAS -[#blue,dashed]> TAS : Unit
+  deactivate TAS
+  TAS -[#blue,dashed]> ESC : Unit
+  deactivate TAS
+
+  ESC -> ST : record(1, 8, false)
+  activate ST
+  ST -[#blue,dashed]> ESC : Unit
+  deactivate ST
+  ESC -> LOG : escorting(1, 1, 8, 1, 3)
+  activate LOG
+  note right of LOG
+    [IMPORTANT] FOH Escorting (R 1): Waitstaff 1 escorts
+    8 customers of group 1 from table 3 outside.
+  end note
+  LOG -[#blue,dashed]> ESC : Unit
+  deactivate LOG
+  ESC -> LOG : escortingStatus(1, 1, 8)
+  activate LOG
+  note right of LOG
+    [DEBUG] FOH Escorting Status (R 1): 1 waitstaff escorted
+    8 customers this tick.
+  end note
+  LOG -[#blue,dashed]> ESC : Unit
+  deactivate LOG
+  ESC -[#blue,dashed]> FOH : Unit
+  deactivate ESC
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+' ============================================================
+group 7. Rating
+  SIM -[#blue]> FOH : callRatingService()
+  activate FOH
+  FOH -[#blue]> RAT : rateFinished([v1, v6], ctx)
+  activate RAT
+
+  note over RAT
+    Only groups that completely left the restaurant this tick
+    rate. Group 6 is still eating, so only group 1 rates.
+  end note
+
+  RAT -> V1 : experience(6)
+  activate V1
+  note right of V1
+    Ordered tick 1, fully served tick 4. That is within the
+    4 tick expectation window, so the experience is POSITIVE.
+  end note
+  V1 --> RAT : POSITIVE
+  deactivate V1
+
+  RAT -> V1 : hasRated()
+  activate V1
+  V1 --> RAT : false
+  deactivate V1
+
+  RAT -[#blue]> G1 : ratingFor(POSITIVE)
+  activate G1
+  note right of G1
+    Group 1 is CASUAL with ratingLikelihood ALWAYS, which
+    rates on every experience. A positive experience gives a
+    POSITIVE rating.
+  end note
+  G1 -[#blue,dashed]> RAT : POSITIVE
+  deactivate G1
+
+  RAT -> RB : add(1, POSITIVE)
+  activate RB
+  RB -[#blue,dashed]> RAT : Unit
+  deactivate RB
+  RAT -> RB : ratingScore(1)
+  activate RB
+  note right of RB
+    FIRE started with positiveRatings 10 and negativeRatings 5
+    from Listing A.1, loaded through initialiseRating() at
+    startup, so this rating makes it 11 and 5.
+  end note
+  RB --> RAT : RatingScore(11, 5)
+  deactivate RB
+
+  RAT -> ST : recordRating(1)
+  activate ST
+  ST -[#blue,dashed]> RAT : Unit
+  deactivate ST
+  RAT -> V1 : markRated()
+  activate V1
+  V1 -[#blue,dashed]> RAT : Unit
+  deactivate V1
+
+  RAT -> LOG : rating(1, 1, POSITIVE, 11, 5)
+  activate LOG
+  note right of LOG
+    [INFO] Rating (R 1): Group 1 rates the restaurant 1 with
+    POSITIVE rating, leading to 11 positive ratings and
+    5 negative ratings.
+  end note
+  LOG -[#blue,dashed]> RAT : Unit
+  deactivate LOG
+  RAT -> LOG : ratingStatus(1, 1)
+  activate LOG
+  note right of LOG
+    [DEBUG] Rating Status (R 1): 1 groups performed ratings
+    this tick.
+  end note
+  LOG -[#blue,dashed]> RAT : Unit
+  deactivate LOG
+  RAT -[#blue,dashed]> FOH : Unit
+  deactivate RAT
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+SIM -> LOG : restaurantEnd(1)
+activate LOG
+note right of LOG
+  [DEBUG] Restaurant End (R 1): Restaurant 1 finished
+  simulating the tick.
+end note
+LOG -[#blue,dashed]> SIM : Unit
+deactivate LOG
+
+SIM -[#blue]> CLK : advanceTick()
+activate CLK
+CLK -[#blue,dashed]> SIM : Unit
+deactivate CLK
+deactivate SIM
+
+@enduml

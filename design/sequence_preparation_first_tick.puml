@@ -1,0 +1,1010 @@
+@startuml sequence_preparation_first_tick
+title Scenario 2 - Preparation phase and first tick of serving, evening 30, restaurant FIRE (id 1)
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 260
+skinparam ParticipantPadding 4
+skinparam BoxPadding 6
+
+' ============================================================
+'  Post-change specification, Listing A.1
+'
+'  FIRE (id 1, EUROPEAN, ticks 1-24): waitstaff 1, TOURNANT 1,
+'  drivers 3, tables 2(9) 3(2) 4(3) 5(3) 6(8) = 25 seats,
+'  ratings 10/5.
+'  Recipes: 1 chicken rice d30 ASIAN, 2 beef pasta d25,
+'           3 potato soup d10 EUROPEAN.
+'
+'  Pantry leftovers obtained on evening 29:
+'      2000 g chicken  bestBefore 1 -> expired for evening 30
+'      1000 g rice     bestBefore 3 -> still usable
+'      5000 mL oil     bestBefore 1 -> expired for evening 30
+'
+'  Group 3 REGULAR size 10, visitingStart 20, period 10,
+'          restaurant 1, visitingTick 4. It visited once and
+'          all ten members ordered potato soup.
+'  Group 1 CASUAL size 8, visitingEvenings [30,35], tick 1,
+'          in-person, 2 members exclude beef + potato.
+'  Group 2 CASUAL delivery size 5, distance 10 km, visitingTick 6.
+'          orderTick = 6 - ceil(10/5) - 3 = 1.
+'  Group 5 CASUAL delivery size 2, AMERICAN only, distance 10 km,
+'          visitingTick 6 -> also decides in tick 1, but FIRE is
+'          EUROPEAN, so no restaurant can be selected.
+' ============================================================
+
+participant "sim:Simulator" as SIM
+participant "GlobalClock" as CLK
+participant "registry:Customer\nRegistry" as REG
+participant "browsing:\nBrowsingService" as BR
+participant "rd1:RestaurantData" as RD
+participant "delivery:\nDeliveryService" as DSV
+participant "r1:Restaurant" as R
+participant "foh:\nFrontOfTheHouse" as FOH
+participant "book:\nReservationBook" as RES
+participant "tables:TableAssign\nmentService" as TAS
+participant "waitstaff:WaiterAssig\nmentService" as WAS
+participant "kitchen:Kitchen" as K
+participant "roster:CookRoster" as ROS
+participant "cook1:Cook" as COOK
+participant "pantry:Pantry" as PAN
+participant "menu:Menu" as MENU
+participant "supplier:Supplier" as SUP
+participant "seating:\nSeatingService" as SEAT
+participant "ordering:\nOrderingService" as ORD
+participant "orderIds:\nGrantOrderId" as OID
+participant "serving:\nServingService" as SRV
+participant "deliveryDesk:\nDeliveryDesk" as DD
+participant "driver1:\nDeliveryDriver" as D1
+participant "dining:\nDiningService" as DIN
+participant "escorting:\nEscortingService" as ESC
+participant "rating:\nRatingService" as RAT
+participant "g3:RegularCustomer\nGroup" as G3
+participant "g1:CasualCustomer\nGroup" as G1
+participant "g2:CasualCustomer\nGroup" as G2
+participant "g5:CasualCustomer\nGroup" as G5
+participant "v1:Visit" as V1
+participant "w1:Waiter" as W1
+participant "stats:Statistics" as ST
+participant "Logger" as LOG
+
+== Preparation phase, evening 30 ==
+
+[-> SIM : runEvening()
+activate SIM
+
+SIM -> LOG : preparationStarted(30)
+activate LOG
+note right of LOG
+  [IMPORTANT] Preparation: Preparation for evening 30 starts.
+end note
+LOG -[#blue,dashed]> SIM : Unit
+deactivate LOG
+
+SIM -> REG : regularsFor(1, 30)
+activate REG
+note right of REG
+  Group 3 has visitingStart 20 and visitingPeriod 10,
+  therefore visitsOn(30) is true.
+end note
+REG --> SIM : [g3]
+deactivate REG
+
+SIM -> R : prepare(30, [g3], supplier)
+activate R
+
+' ---------- table reservation ----------
+group Table reservation  (EVENT groups first, then REGULAR)
+  R -[#blue]> FOH : openEvening(30, [g3])
+  activate FOH
+
+  FOH -> TAS : splitAllMerged()
+  activate TAS
+  TAS -[#blue,dashed]> FOH : Unit
+  deactivate TAS
+
+  FOH -> RES : clearTonight()
+  activate RES
+  RES -[#blue,dashed]> FOH : Unit
+  deactivate RES
+
+  FOH -> RES : openEvening(30, [g3])
+  activate RES
+
+  RES -> RES : expectedFor(30)
+  activate RES
+  note right of RES
+    No EVENT group is booked for evening 30, so the
+    reservation phase only has regular group 3.
+  end note
+  RES -[#blue,dashed]> RES : []
+  deactivate RES
+
+  RES -> TAS : assign(10, COMMON, liftRule = true)
+  activate TAS
+
+  TAS -> TAS : exactFit(10, pool)
+  activate TAS
+  TAS -[#blue,dashed]> TAS : null
+  deactivate TAS
+
+  TAS -> TAS : larger(10, pool, strict = true)
+  activate TAS
+  TAS -[#blue,dashed]> TAS : null
+  deactivate TAS
+
+  TAS -> TAS : merged(10, pool, strict = true)
+  activate TAS
+  TAS -> TAS : merge(t5, t6)
+  activate TAS
+  note right of TAS
+    Free tables are 2(9), 3(2), 4(3), 5(3), 6(8).
+    The merge search reaches 2+3+3+8 = 16. It can drop
+    the size-2 table and then the lower-id size-3 table,
+    leaving tables 5+6 = 11 seats for group 3.
+  end note
+  TAS -[#blue,dashed]> TAS : t5 (merged 5+6, 11 seats)
+  deactivate TAS
+  TAS -[#blue,dashed]> TAS : t5
+  deactivate TAS
+
+  TAS --> RES : t5 (merged 5+6, 11 seats)
+  deactivate TAS
+
+  RES -[#blue,dashed]> FOH : [] (no reservation failures)
+  deactivate RES
+  FOH -[#blue,dashed]> R : Unit
+  deactivate FOH
+end
+
+' ---------- kitchen planning ----------
+group Kitchen planning and procurement
+  note over R,FOH
+    FOH now has 11 reserved seats out of 25 total seats.
+    The remaining 14 seats are used for the generic demand estimate.
+  end note
+
+  R -> K : planEvening([g3], 14)
+  activate K
+
+  K -> PAN : checkDateAndCleanOut()
+  activate PAN
+  note right of PAN
+    bestBefore includes the evening of obtainment. Therefore
+    chicken and oil obtained on evening 29 with bestBefore 1
+    are expired now; the rice with bestBefore 3 remains.
+  end note
+
+  PAN -[#blue]> LOG : pantryRemoved(1, 2000, G, "chicken")
+  activate LOG
+  note right of LOG
+    [DEBUG] Pantry (R 1): Removed 2000 g of chicken from the pantry.
+  end note
+  LOG -[#blue,dashed]> PAN : Unit
+  deactivate LOG
+
+  PAN -[#blue]> LOG : pantryRemoved(1, 5000, ML, "oil")
+  activate LOG
+  note right of LOG
+    [DEBUG] Pantry (R 1): Removed 5000 mL of oil from the pantry.
+  end note
+  LOG -[#blue,dashed]> PAN : Unit
+  deactivate LOG
+
+  PAN -[#blue,dashed]> K : Unit
+  deactivate PAN
+
+  K -> G3 : expectedDishes(menu)
+  activate G3
+  note right of G3
+    The known REGULAR group has one previous visit, where all
+    ten members ordered potato soup. Those ten soups are planned.
+  end note
+  G3 --> K : {potato soup: 10}
+  deactivate G3
+
+  note right of K
+    For the 14 non-reserved seats, the kitchen estimates
+    ceil(14/10) = 2 of every menu dish. Total plan:
+    12 potato soup, 2 chicken rice, 2 beef pasta.
+  end note
+
+  K -> PAN : canCover(r)
+  activate PAN
+  note right of PAN
+    Only 1000 g rice survived the expiration sweep. The planned
+    shortages of the other ingredients must be procured.
+  end note
+  PAN -[#blue,dashed]> K : Boolean
+  deactivate PAN
+
+  K -> SUP : resupply(pantry, needed)
+  activate SUP
+  note right of SUP
+    Supplier quantities are rounded up to whole packages.
+    The resulting procurement is:
+    beef 300 g, chicken 1000 g, garlic 200 g, oil 500 mL,
+    onion 20 X, pasta 1000 g, potato 4000 g.
+    Existing rice already covers the required 400 g.
+  end note
+  note over SUP,PAN
+    resupply() transfers the procured packages directly into the Pantry.
+  end note
+  SUP -[#blue,dashed]> K : Unit
+  deactivate SUP
+
+  loop procured ingredients, ascending alphabetic name
+    K -> LOG : procured(1, amount, unit, name)
+    activate LOG
+    LOG -[#blue,dashed]> K : Unit
+    deactivate LOG
+  end
+  note right of LOG
+    [DEBUG] Pantry (R 1): Procured 300 g of beef from the supplier.
+    [DEBUG] Pantry (R 1): Procured 1000 g of chicken from the supplier.
+    [DEBUG] Pantry (R 1): Procured 200 g of garlic from the supplier.
+    [DEBUG] Pantry (R 1): Procured 500 mL of oil from the supplier.
+    [DEBUG] Pantry (R 1): Procured 20 X of onion from the supplier.
+    [DEBUG] Pantry (R 1): Procured 1000 g of pasta from the supplier.
+    [DEBUG] Pantry (R 1): Procured 4000 g of potato from the supplier.
+  end note
+
+  K -[#blue,dashed]> R : Unit
+  deactivate K
+
+  R -> LOG : restocked(1)
+  activate LOG
+  note right of LOG
+    [INFO] Pantry (R 1): Restocked ingredients.
+  end note
+  LOG -[#blue,dashed]> R : Unit
+  deactivate LOG
+end
+
+R -[#blue,dashed]> SIM : Unit
+deactivate R
+
+== Serving phase, tick 1 ==
+
+SIM -> LOG : servingStarted(30)
+activate LOG
+note right of LOG
+  [IMPORTANT] Serving: Serving of evening 30 starts.
+end note
+LOG -[#blue,dashed]> SIM : Unit
+deactivate LOG
+
+SIM -> SIM : runTick()
+activate SIM
+
+SIM -> LOG : tickStarted(1, 1)
+activate LOG
+note right of LOG
+  [IMPORTANT] Simulation: Tick 1 (1) started.
+end note
+LOG -[#blue,dashed]> SIM : Unit
+deactivate LOG
+
+' ---------- browsing refresh ----------
+SIM -> R : snapshot()
+activate R
+R --> SIM : rd1:RestaurantData
+deactivate R
+
+SIM -> BR : refresh([rd1])
+activate BR
+BR -[#blue,dashed]> SIM : Unit
+deactivate BR
+
+' ---------- restaurant decision ----------
+group 0. Restaurant Decision  (EVENT then CASUAL, ascending id)
+  SIM -> REG : deciding(30, 1)
+  activate REG
+  note right of REG
+    Group 1 decides because it visits in tick 1.
+    Delivery groups 2 and 5 also decide now: their order tick is
+    visitingTick 6 - travel 2 - cooking allowance 3 = tick 1.
+  end note
+  REG -[#blue,dashed]> SIM : [g1, g2, g5]
+  deactivate REG
+
+  ' ----- group 1 -----
+  SIM -> BR : choose(g1)
+  activate BR
+  BR -> RD : openAt(1)
+  activate RD
+  RD -[#blue,dashed]> BR : true
+  deactivate RD
+  BR -> G1 : acceptsAny(dishes)
+  activate G1
+  note right of G1
+    Two members exclude beef and potato, but chicken rice
+    contains neither, so every member has an edible dish.
+  end note
+  G1 --> BR : true
+  deactivate G1
+  BR -> BR : rank(candidates)
+  activate BR
+  BR -[#blue,dashed]> BR : restaurant 1
+  deactivate BR
+  BR -[#blue]> RD : take(g1)
+  activate RD
+  note right of RD
+    Group 1 is in-person, so the current seat estimate is
+    reduced by its group size before the next decision.
+  end note
+  RD -[#blue,dashed]> BR : Unit
+  deactivate RD
+  BR --> SIM : 1
+  deactivate BR
+
+  SIM -> LOG : restaurantDecision(1, 1)
+  activate LOG
+  note right of LOG
+    [DEBUG] Restaurant Decision: Group 1 decided on restaurant 1.
+  end note
+  LOG -[#blue,dashed]> SIM : Unit
+  deactivate LOG
+
+  ' ----- group 2: delivery -----
+  SIM -[#blue]> BR : choose(g2)
+  activate BR
+  BR -> RD : openAt(1)
+  activate RD
+  RD -[#blue,dashed]> BR : true
+  deactivate RD
+  note right of BR
+    Group 2 is a delivery. FIRE has a free driver and matches
+    one of its requested restaurant types, so it is eligible.
+  end note
+  BR -> BR : rank(candidates)
+  activate BR
+  BR -[#blue,dashed]> BR : restaurant 1
+  deactivate BR
+  BR -[#blue]> RD : take(g2)
+  activate RD
+  note right of RD
+    For a delivery, take(g2) decrements the estimated number
+    of free drivers rather than the free-seat estimate.
+  end note
+  RD -[#blue,dashed]> BR : Unit
+  deactivate RD
+  BR -[#blue,dashed]> SIM : 1
+  deactivate BR
+
+  SIM -> LOG : restaurantDecision(2, 1)
+  activate LOG
+  note right of LOG
+    [DEBUG] Restaurant Decision: Group 2 decided on restaurant 1.
+  end note
+  LOG -[#blue,dashed]> SIM : Unit
+  deactivate LOG
+
+  ' ----- group 5: no match -----
+  SIM -[#blue]> BR : choose(g5)
+  activate BR
+  note right of BR
+    Group 5 only accepts AMERICAN restaurants. FIRE is EUROPEAN,
+    so there is no eligible restaurant in Listing A.1.
+  end note
+  BR -[#blue,dashed]> SIM : null
+  deactivate BR
+
+  SIM -> LOG : noRestaurantDecision(5)
+  activate LOG
+  note right of LOG
+    [DEBUG] Restaurant No Decision: Group 5 could not decide for a restaurant.
+  end note
+  LOG -[#blue,dashed]> SIM : Unit
+  deactivate LOG
+end
+
+SIM -> LOG : restaurantStart(1)
+activate LOG
+note right of LOG
+  [DEBUG] Restaurant Start (R 1): Restaurant 1 simulates a tick.
+end note
+LOG -[#blue,dashed]> SIM : Unit
+deactivate LOG
+
+SIM -> R : subunit()
+activate R
+R --> SIM : ctx:SubUnits
+deactivate R
+
+SIM -> FOH : beginTick(1)
+activate FOH
+FOH -[#blue]> WAS : beginTick()
+activate WAS
+WAS -> W1 : beginTick()
+activate W1
+W1 -[#blue,dashed]> WAS : Unit
+deactivate W1
+WAS -[#blue,dashed]> FOH : Unit
+deactivate WAS
+FOH -[#blue,dashed]> SIM : Unit
+deactivate FOH
+
+' ---------- step 1 ----------
+group 1. Customer arrivals, seating and ordering
+  ' ----- group 1 in-person seating -----
+  SIM -[#blue]> FOH : callSeatingService([g1])
+  activate FOH
+
+  FOH -> LOG : arrival(1, 1)
+  activate LOG
+  note right of LOG
+    [INFO] Restaurant Arrival (R 1): Group 1 arrived at restaurant 1.
+  end note
+  LOG -[#blue,dashed]> FOH : Unit
+  deactivate LOG
+
+  create V1
+  FOH -> V1 : new Visit(g1)
+  activate V1
+  note right of V1
+    The visit starts in AwaitingSeat.
+  end note
+  V1 -[#blue,dashed]> FOH : v1
+  deactivate V1
+
+  FOH -> SEAT : seat(v1, ctx)
+  activate SEAT
+
+  SEAT -[#blue]> WAS : assignPermanent(v1)
+  activate WAS
+  WAS -> W1 : remaining(SEATING)
+  activate W1
+  W1 --> WAS : 10
+  deactivate W1
+  note right of WAS
+    Group 1 is CASUAL, so waiter 1 is selected as its permanent
+    waiter. The assignment remains for ordering, serving and escorting.
+  end note
+  WAS -[#blue,dashed]> SEAT : Unit
+  deactivate WAS
+
+  SEAT -> TAS : assign(8, COMMON, liftRule = false)
+  activate TAS
+  TAS -> TAS : exactFit(8, pool)
+  activate TAS
+  TAS -[#blue,dashed]> TAS : null
+  deactivate TAS
+  TAS -> TAS : larger(8, pool, strict = true)
+  activate TAS
+  note right of TAS
+    The merged table 5+6 is reserved for group 3. Among the free
+    tables, table 2 has 9 seats and satisfies the 3/4 rule for size 8.
+  end note
+  TAS -[#blue,dashed]> TAS : t2
+  deactivate TAS
+  TAS --> SEAT : t2
+  deactivate TAS
+
+  SEAT -> V1 : seated(t2, w1, 1)
+  activate V1
+  V1 --> SEAT : true
+  deactivate V1
+
+  SEAT -> W1 : consume(SEATING, 8)
+  activate W1
+  W1 -[#blue,dashed]> SEAT : Unit
+  deactivate W1
+  SEAT -> W1 : adjustLoad(8)
+  activate W1
+  W1 -[#blue,dashed]> SEAT : Unit
+  deactivate W1
+
+  SEAT -[#blue,dashed]> FOH : true
+  deactivate SEAT
+
+  FOH -> LOG : seating(1, 1, 2, [1])
+  activate LOG
+  note right of LOG
+    [IMPORTANT] FOH Seating (R 1): Group 1 seated at table 2
+    by waitstaff 1.
+  end note
+  LOG -[#blue,dashed]> FOH : Unit
+  deactivate LOG
+
+  FOH -> LOG : seatingStatus(1, 1, 8, 1)
+  activate LOG
+  note right of LOG
+    [DEBUG] FOH Seating Status (R 1): 1 waitstaff seated
+    8 customers on 1 tables.
+  end note
+  LOG -[#blue,dashed]> FOH : Unit
+  deactivate LOG
+
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+
+  ' ----- group 1 in-person order -----
+  SIM -[#blue]> FOH : callOrderingService()
+  activate FOH
+
+  FOH -[#blue]> V1 : pending(ORDERING, 1)
+  activate V1
+  V1 -[#blue,dashed]> FOH : 8
+  deactivate V1
+
+  FOH -> ORD : takeOrder(v1, ctx)
+  activate ORD
+
+  ORD -> MENU : orderable
+  activate MENU
+  MENU --> ORD : [chicken rice, beef pasta, potato soup]
+  deactivate MENU
+
+  note right of ORD
+    The two restricted members order first and can only eat
+    chicken rice. The six members without preferences choose
+    the highest recipe id, potato soup.
+  end note
+
+  ORD -> ORD : chooseFor(restrictedCustomer, available)
+  activate ORD
+  ORD -[#blue,dashed]> ORD : chicken rice
+  deactivate ORD
+  ORD -> ORD : chooseFor(plainCustomer, available)
+  activate ORD
+  ORD -[#blue,dashed]> ORD : potato soup
+  deactivate ORD
+
+  ORD -> OID : grantAndIncrement()
+  activate OID
+  OID --> ORD : 1
+  deactivate OID
+
+  loop each ordered meal
+    ORD -> PAN : reserve(recipe)
+    activate PAN
+    PAN -[#blue,dashed]> ORD : true
+    deactivate PAN
+  end
+
+  ORD -> K : enqueue(o1)
+  activate K
+  K -[#blue,dashed]> ORD : Unit
+  deactivate K
+
+  ORD -> V1 : ordered(o1, 1)
+  activate V1
+  V1 -[#blue,dashed]> ORD : true
+  deactivate V1
+
+  ORD -[#blue]> MENU : refresh()
+  activate MENU
+  MENU -> PAN : canCover(r)
+  activate PAN
+  PAN -[#blue,dashed]> MENU : Boolean
+  deactivate PAN
+  MENU -> K : canCook(r)
+  activate K
+  K -[#blue,dashed]> MENU : Boolean
+  deactivate K
+  MENU -[#blue,dashed]> ORD : Unit
+  deactivate MENU
+
+  ORD --> FOH : o1 {chicken rice:2, potato soup:6}
+  deactivate ORD
+
+  FOH -> LOG : ordering(1, 1, 1, {"chicken rice":2, "potato soup":6}, 1)
+  activate LOG
+  note right of LOG
+    [IMPORTANT] FOH Ordering (R 1): Group 1 placed order 1 of
+    chicken rice:2,potato soup:6 with waitstaff 1.
+  end note
+  LOG -[#blue,dashed]> FOH : Unit
+  deactivate LOG
+
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+
+  ' ----- group 2 delivery order in the same tick -----
+  SIM -[#blue]> SIM : runOnlineOrders()
+  activate SIM
+  note right of SIM
+    Group 2 must order in tick 1 so that 3 cooking ticks plus
+    ceil(10/5)=2 travel ticks can reach visitingTick 6.
+  end note
+
+  SIM -[#blue]> DSV : placeOrder(g2, r1, 1)
+  activate DSV
+  DSV -> DSV : calculateTravelTicks(10)
+  activate DSV
+  DSV -[#blue,dashed]> DSV : 2
+  deactivate DSV
+
+  DSV -> R : subunit()
+  activate R
+  R -[#blue,dashed]> DSV : ctx:SubUnits
+  deactivate R
+
+  note right of DSV
+    Group 2 has no food preferences, therefore all five members
+    choose the highest recipe id: potato soup.
+  end note
+
+  DSV -> OID : grantAndIncrement()
+  activate OID
+  OID -[#blue,dashed]> DSV : 2
+  deactivate OID
+
+  loop 5 x potato soup
+    DSV -> PAN : reserve(potatoSoup)
+    activate PAN
+    PAN -[#blue,dashed]> DSV : true
+    deactivate PAN
+  end
+
+  DSV -> K : enqueue(o2)
+  activate K
+  K -[#blue,dashed]> DSV : Unit
+  deactivate K
+
+  DSV -[#blue]> MENU : refresh()
+  activate MENU
+  MENU -> PAN : canCover(r)
+  activate PAN
+  PAN -[#blue,dashed]> MENU : Boolean
+  deactivate PAN
+  MENU -> K : canCook(r)
+  activate K
+  K -[#blue,dashed]> MENU : Boolean
+  deactivate K
+  MENU -[#blue,dashed]> DSV : Unit
+  deactivate MENU
+
+  DSV -> LOG : ordering(1, 2, 2, {"potato soup":5}, null)
+  activate LOG
+  note right of LOG
+    [IMPORTANT] FOH Ordering (R 1): Group 2 placed order 2 of
+    potato soup:5.
+  end note
+  LOG -[#blue,dashed]> DSV : Unit
+  deactivate LOG
+
+  DSV -[#blue,dashed]> SIM : o2 {potato soup:5}
+  deactivate DSV
+  SIM -[#blue,dashed]> SIM : Unit
+  deactivate SIM
+
+  SIM -[#blue]> LOG : orderingStatus(1, 13, 1)
+  activate LOG
+  note right of LOG
+    [DEBUG] FOH Ordering Status (R 1): The restaurant received
+    orders from 13 customers, 1 waitstaff took orders.
+    The five delivery customers count as ordering customers,
+    but no waiter took their order.
+  end note
+  LOG -[#blue,dashed]> SIM : Unit
+  deactivate LOG
+end
+
+' ---------- step 2 ----------
+group 2. Kitchen scheduling and cooking
+  SIM -> K : cook()
+  activate K
+
+  K -> ROS : claim(potatoSoup, 1)
+  activate ROS
+  note right of ROS
+    Order 1 is considered first. Potato soup is FIRE's basic dish,
+    therefore it precedes chicken rice. Scaling then includes the
+    five potato soups from delivery order 2 as well.
+  end note
+  ROS --> K : cook1
+  deactivate ROS
+
+  loop 11 reserved potato-soup meals
+    K -[#blue]> PAN : deleteFromReserved(potatoSoup, cooked = true)
+    activate PAN
+    PAN -[#blue,dashed]> K : Unit
+    deactivate PAN
+  end
+
+  K -> COOK : startCooking([11 x potato soup], 1)
+  activate COOK
+  note right of COOK
+    A cook takes all queued meals of the same dish across all
+    orders at once. Therefore 6 meals from order 1 and 5 from
+    order 2 are cooked in one batch.
+  end note
+  COOK -[#blue,dashed]> K : Unit
+  deactivate COOK
+
+  K -> LOG : dishAssignment(1, 1, TOURNANT, 11, "potato soup", 1, [1,2])
+  activate LOG
+  note right of LOG
+    [IMPORTANT] Kitchen Dish Assignment (R 1): Cook 1 of type
+    TOURNANT starts cooking 11 meals of dish potato soup based
+    on order 1 for orders 1,2.
+  end note
+  LOG -[#blue,dashed]> K : Unit
+  deactivate LOG
+
+  note right of K
+    The two chicken-rice meals are not started this tick because
+    the only cook may start another recipe only in a later tick.
+  end note
+
+  K -> ROS : finished(1)
+  activate ROS
+  ROS -> COOK : isFree(1)
+  activate COOK
+  COOK -[#blue,dashed]> ROS : true
+  deactivate COOK
+  ROS -> COOK : endCooking(1)
+  activate COOK
+  note right of COOK
+    potato soup durationInTicks() = ceil(10/10) - 1 = 0,
+    so all eleven meals finish in the tick they start.
+  end note
+  COOK --> ROS : [11 x Meal potato soup]
+  deactivate COOK
+  ROS --> K : [11 x Meal]
+  deactivate ROS
+
+  K -> LOG : mealCooked(1, 1, 11, "potato soup", 0)
+  activate LOG
+  note right of LOG
+    [IMPORTANT] Kitchen Meal Cooked (R 1): Cook 1 finished
+    cooking 11 meals of dish potato soup 0 ticks after ordering.
+  end note
+  LOG -[#blue,dashed]> K : Unit
+  deactivate LOG
+
+  K -> ST : recordCooked(1, 11)
+  activate ST
+  ST -[#blue,dashed]> K : Unit
+  deactivate ST
+
+  K -> LOG : kitchenStatus(1, 1, 11, 11, 11)
+  activate LOG
+  note right of LOG
+    [DEBUG] Kitchen Status (R 1): 1 cooks were active cooking
+    11 and finishing 11 meals. 11 meals can be served by the waitstaff.
+  end note
+  LOG -[#blue,dashed]> K : Unit
+  deactivate LOG
+
+  K --> SIM : [11 x Meal]
+  deactivate K
+
+  SIM -[#blue]> FOH : mealsReady([11 x Meal])
+  activate FOH
+  loop 6 meals belonging to group 1
+    FOH -> V1 : mealCooked(m, 1)
+    activate V1
+    V1 -[#blue,dashed]> FOH : Unit
+    deactivate V1
+  end
+  note right of FOH
+    Six cooked soups belong to visit v1. The other five belong
+    to the complete delivery order 2 and are available for the
+    delivery handover during the SERVING step.
+  end note
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+' ---------- step 3 ----------
+group 3. Serving
+  SIM -[#blue]> FOH : callServingService()
+  activate FOH
+
+  FOH -[#blue]> V1 : pending(SERVING, 1)
+  activate V1
+  V1 -[#blue,dashed]> FOH : 6
+  deactivate V1
+
+  FOH -[#blue]> SRV : serve([v1], [w1], ctx)
+  activate SRV
+  note right of SRV
+    The six soups for table 2 are cooked, but the two chicken-rice
+    meals are not. The complete-table rule therefore holds these
+    six meals back in tick 1.
+  end note
+
+  SRV -> LOG : noServing(1, 1, 6, 2)
+  activate LOG
+  note right of LOG
+    [DEBUG] FOH No Serving (R 1): Waitstaff 1 did not serve
+    6 meals to table 2.
+  end note
+  LOG -[#blue,dashed]> SRV : Unit
+  deactivate LOG
+
+  note right of SRV
+    Delivery order 2 is already complete. Deliveries do not wait
+    for other table meals, so waiter 1 can hand all five soups to
+    the waiting delivery driver in this SERVING step.
+  end note
+
+  SRV -> W1 : remaining(SERVING)
+  activate W1
+  W1 --> SRV : 10
+  deactivate W1
+
+  SRV -> W1 : consume(SERVING, 5)
+  activate W1
+  W1 -[#blue,dashed]> SRV : Unit
+  deactivate W1
+
+  SRV -[#blue]> DD : enqueue(o2)
+  activate DD
+  DD -[#blue,dashed]> SRV : Unit
+  deactivate DD
+
+  SRV -> LOG : deliveryHandover(1, 1, {"potato soup":5}, 1, 2)
+  activate LOG
+  note right of LOG
+    [IMPORTANT] FOH Delivery (R 1): Waitstaff 1 serves
+    potato soup:5 meals to driver 1 for order 2.
+  end note
+  LOG -[#blue,dashed]> SRV : Unit
+  deactivate LOG
+
+  SRV -> LOG : servingStatus(1, 1, 5)
+  activate LOG
+  note right of LOG
+    [DEBUG] FOH Serving Status (R 1): 1 waitstaff served 5 meals.
+    Meals handed to a delivery driver are included in this status.
+  end note
+  LOG -[#blue,dashed]> SRV : Unit
+  deactivate LOG
+
+  SRV -[#blue,dashed]> FOH : Unit
+  deactivate SRV
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+' ---------- step 4 ----------
+group 4. Delivering
+  SIM -[#blue]> FOH : callDeliveryDesk()
+  activate FOH
+  FOH -[#blue]> DD : send()
+  activate DD
+
+  DD -> D1 : isFree()
+  activate D1
+  D1 -[#blue,dashed]> DD : true
+  deactivate D1
+
+  DD -> DD : grantDriverId()
+  activate DD
+  DD -[#blue,dashed]> DD : 1
+  deactivate DD
+
+  DD -> D1 : receiveOrder(o2, 1)
+  activate D1
+  D1 -[#blue,dashed]> DD : Unit
+  deactivate D1
+
+  DD -> LOG : deliveryPreparation(1, 1, 2, 2, 2)
+  activate LOG
+  note right of LOG
+    [INFO] Delivery Preparation (R 1): Driver 1 prepares driving
+    order 2 to group 2, which will take 2 ticks.
+    Driving itself starts in the following tick.
+  end note
+  LOG -[#blue,dashed]> DD : Unit
+  deactivate LOG
+
+  DD -[#blue,dashed]> FOH : Unit
+  deactivate DD
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+' ---------- step 5 ----------
+group 5. Eating
+  SIM -[#blue]> FOH : callDiningService()
+  activate FOH
+  FOH -[#blue]> DIN : eat([v1], ctx)
+  activate DIN
+
+  DIN -[#blue]> V1 : advance(1)
+  activate V1
+  note right of V1
+    Nobody at table 2 has been served. Visit.advance() delegates
+    the tick update to the current VisitState. The group has only
+    waited one tick, so nobody leaves and nobody finishes eating.
+    leftUnservedThisTick = 0; finishedEatingThisTick = 0.
+  end note
+  V1 -[#blue,dashed]> DIN : Unit
+  deactivate V1
+
+  DIN -> LOG : eatingStatus(1, 0, 0)
+  activate LOG
+  note right of LOG
+    [DEBUG] FOH Eating Status (R 1): 0 customers are eating
+    and 0 customers have finished eating this tick.
+  end note
+  LOG -[#blue,dashed]> DIN : Unit
+  deactivate LOG
+
+  DIN -[#blue,dashed]> FOH : Unit
+  deactivate DIN
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+' ---------- step 6 ----------
+group 6. Escorting customers
+  SIM -[#blue]> FOH : callEscortingService()
+  activate FOH
+  FOH -[#blue]> V1 : pending(ESCORTING, 1)
+  activate V1
+  V1 -[#blue,dashed]> FOH : 0
+  deactivate V1
+
+  FOH -[#blue]> ESC : escort([], ctx)
+  activate ESC
+  ESC -> LOG : escortingStatus(1, 0, 0)
+  activate LOG
+  note right of LOG
+    [DEBUG] FOH Escorting Status (R 1): 0 waitstaff escorted
+    0 customers this tick.
+  end note
+  LOG -[#blue,dashed]> ESC : Unit
+  deactivate LOG
+  ESC -[#blue,dashed]> FOH : Unit
+  deactivate ESC
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+' ---------- step 7 ----------
+group 7. Rating
+  SIM -[#blue]> FOH : callRatingService()
+  activate FOH
+  FOH -[#blue]> RAT : rateFinished([v1], ctx)
+  activate RAT
+
+  RAT -> V1 : isFinished()
+  activate V1
+  V1 -[#blue,dashed]> RAT : false
+  deactivate V1
+
+  RAT -> LOG : ratingStatus(1, 0)
+  activate LOG
+  note right of LOG
+    [DEBUG] Rating Status (R 1): 0 groups performed ratings this tick.
+    Group 1 has not left, group 2 is still awaiting delivery, and
+    group 5 never selected a restaurant.
+  end note
+  LOG -[#blue,dashed]> RAT : Unit
+  deactivate LOG
+
+  RAT -[#blue,dashed]> FOH : Unit
+  deactivate RAT
+  FOH -[#blue,dashed]> SIM : Unit
+  deactivate FOH
+end
+
+SIM -> LOG : restaurantEnd(1)
+activate LOG
+note right of LOG
+  [DEBUG] Restaurant End (R 1): Restaurant 1 finished simulating the tick.
+end note
+LOG -[#blue,dashed]> SIM : Unit
+deactivate LOG
+
+SIM -[#blue]> CLK : advanceTick()
+activate CLK
+CLK -[#blue,dashed]> SIM : Unit
+deactivate CLK
+
+SIM -[#blue,dashed]> SIM : Unit
+' return from the nested runTick() call
+deactivate SIM
+
+note right of SIM
+  The diagram stops after the first tick of evening 30;
+  runEvening() continues with the remaining serving ticks.
+end note
+
+deactivate SIM
+
+@enduml

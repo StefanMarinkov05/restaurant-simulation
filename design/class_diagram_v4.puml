@@ -1,0 +1,1281 @@
+@startuml class_diagram_v4
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+skinparam linetype ortho
+hide empty members
+
+' ============================================================
+'  LAYERS
+'    0  Simulator                     the run loop
+'    1  Restaurant + shared services  one evening, one venue
+'    2  FrontOfTheHouse / Kitchen     subsystem facades
+'    3  services                      one job each
+'    4  domain objects                data and rules
+'
+'  A class only ever calls downwards. No layer skipping except
+'  through a facade.
+' ============================================================
+package Main{
+    class Main{
+    + {static} main(args: Array<String>) : Unit
+    - run(food: String, restaurants: String, scenario: String,\n maxTicks: Int, logLevel: LogLevel, out: String?) : Unit
+    }
+}
+note bottom of Main
+  main() is the thin CLI shell: it does nothing but read
+  the raw argv (section 3.1: ~--food, ~--restaurants,
+  ~--scenario, ~--maxTicks, ~--logLevel, ~--out), turn each
+  flag into a typed value, and hand them to run().
+
+  run() owns the actual startup: it configures the Logger,
+  constructs the ConfigurationLoader with the three paths
+  and maxTicks, calls load(), and - if a Simulator comes
+  back - calls Simulator.run(). Nothing below Main ever
+  sees an argv array or parses a flag, so the CLI format
+  is isolated in one method.
+end note
+
+package ConfigPackage #lightgreen {
+
+class ConfigurationLoader {
+    - model: ParsedModel
+    - parsers: MutableList<ConfigParser>
+    - maxTicks: Int
+    + load(): Simulator?
+    - runStage(parser: ConfigParser, path: String): Boolean
+    - buildSimulator(): Simulator
+}
+
+abstract class ConfigParser {
+    # {abstract} schemaPath: String
+    # validator: Validator
+    # model: ParsedModel
+
+    + parse(path: String): Boolean
+    # {abstract} readEntities(path: String): Boolean
+    # {abstract} validateFileScope(): Boolean
+}
+note right of ConfigParser
+  parse() is unchanged: validate the file against
+  schemaPath with Validator, then readEntities(path),
+  then validateFileScope(). readEntities() now takes
+  the path (not a parsed root) because each subclass
+  deserializes into its own file-root DTO - Kotlin
+  overrides cannot vary the parameter type per subclass.
+end note
+
+class Validator {
+    + validateFile(path: String, schemaPath: String): Boolean
+}
+
+class ParsedModel {
+    - ingredientsByName: Map<String, Ingredient>
+    - recipesById: Map<Int, Recipe>
+    - restaurantsById: Map<Int, Restaurant>
+    - customerGroupsById: Map<Int, CustomerGroup>
+    - incidentsById: Map<Int, Incident>
+
+    + ingredient(name: String): Ingredient?
+    + recipe(id: Int): Recipe?
+    + restaurant(id: Int): Restaurant?
+    + registerIngredient(i: Ingredient): Boolean
+    + registerRecipe(r: Recipe): Boolean
+    + registerRestaurant(r: Restaurant): Boolean
+    + registerCustomerGroup(g: CustomerGroup): Boolean
+    + registerIncident(i: Incident): Boolean
+    + basicDishesFor(type: RestaurantType): Set<String>
+    + allIngredientNames(): Set<String>
+    + allDishNames(): Set<String>
+    + allRestaurants(): MutableList<Restaurant>
+    + allCustomerGroups(): MutableList<CustomerGroup>
+    + allIncidents(): MutableList<Incident>
+}
+note right of ParsedModel
+  This is the only handoff from Config to the rest of the
+  system: once all three parse stages return true,
+  ConfigurationLoader.buildSimulator(params) reads
+  allRestaurants() / allCustomerGroups() / allIncidents()
+  off this same model instance and passes them straight
+  into the Simulator constructor. No second container
+  (e.g. a DTO/content bundle) is needed - ParsedModel IS
+  the parsed content, addressable by id/name during
+  parsing and readable as flat MutableLists once parsing is done.
+end note
+
+class FoodParser {
+    # readEntities(path: String): Boolean
+    # validateFileScope(): Boolean
+    - serialiseIngredient(ingredientDto: IngredientDto): Ingredient?
+    - serialiseRecipe(recipeDto: RecipeDto): Recipe?
+    - serialiseRecipeIngredients(recipeDto: RecipeDto): MutableList<RecipeIngredient>?
+    .. whole file ..
+    - checkBasicDishUniqueness(recipes: MutableList<Recipe>): Boolean
+}
+note right of FoodParser
+  Ingredient, Recipe and RecipeIngredient are domain
+  classes, not DTOs - they live in Shared_package (below,
+  with Order/Meal/CustomerGroup) because Kitchen, Menu and
+  Restaurant all construct/read them too, not just this
+  parser. serialiseIngredient/serialiseRecipe/
+  serialiseRecipeIngredients are exactly where a
+  ...Dto (this package) turns into its domain counterpart
+  (Shared_package): one IngredientDto -> one Ingredient,
+  one RecipeIngredientDto -> one RecipeIngredient (a name
+  string resolved to a real Ingredient reference via
+  ParsedModel.ingredient(name)).
+end note
+
+class RestaurantParser {
+    # readEntities(path: String): Boolean
+    # validateFileScope(): Boolean
+    - serialiseRestaurant(restaurantDto: RestaurantJsonDto): Restaurant?
+    - resolveRecipes(restaurantDto: RestaurantJsonDto): MutableList<Recipe>?
+    - serialiseCookCounts(restaurantDto: RestaurantJsonDto): Map<CookType, Int>?
+    - serialiseTables(restaurantDto: RestaurantJsonDto): MutableList<Table>?
+    - checkAtLeastOneOfEach(restaurantDto: RestaurantJsonDto): Boolean
+    - checkBasicDishCoverage(type: RestaurantType, dishes: Set<String>): Boolean
+}
+
+class ScenarioParser {
+    # readEntities(path: String): Boolean
+    # validateFileScope(): Boolean
+    .. customer groups ..
+    - serialiseCustomerGroup(groupDto: CustomerGroupJsonDto): CustomerGroup?
+    - serialiseRegularGroup(groupDto: CustomerGroupJsonDto): RegularCustomerGroup?
+    - serialiseCasualGroup(groupDto: CustomerGroupJsonDto): CasualCustomerGroup?
+    - serialiseEventGroup(groupDto: CustomerGroupJsonDto): EventCustomerGroup?
+    - serialiseFoodPreferences(groupDto: CustomerGroupJsonDto): MutableList<FoodPreference>?
+    - checkPreferenceSizes(g: CustomerGroup): Boolean
+    - checkDeliveryOrderTick(g: CasualCustomerGroup): Boolean
+    - checkRegularRestaurantExists(g: RegularCustomerGroup): Boolean
+    - checkEventFavouriteDishPerType(g: EventCustomerGroup): Boolean
+    .. incidents ..
+    - serialiseIncident(incidentDto: IncidentJsonDto): Incident?
+    - serialiseStaffChange(incidentDto: IncidentJsonDto): StaffChange?
+    - serialiseRecipeChange(incidentDto: IncidentJsonDto): RecipeChange?
+    - serialisePackagingChange(incidentDto: IncidentJsonDto): PackagingChange?
+    - serialiseIngredientUnavailability(incidentDto: IncidentJsonDto): IngredientUnavailability?
+    - checkUnavailabilityOverlap(incidents: MutableList<IngredientUnavailability>): Boolean
+}
+note right of ScenarioParser
+  checkEventFavouriteDishPerType (spec 2.3.2, new validation):
+  "Event customer groups need a favorite dish for every
+  restaurant type they consider visiting." Checked here,
+  not in FoodParser/RestaurantParser, because it needs both
+  g.restaurantTypes (this file) and the basic-dish names per
+  type (ParsedModel.basicDishesFor, populated in stage 1).
+end note
+
+ConfigParser <|-- FoodParser
+ConfigParser <|-- RestaurantParser
+ConfigParser <|-- ScenarioParser
+
+ConfigurationLoader *--   ParsedModel   : model >
+ConfigurationLoader *-- ConfigParser  : parsers >
+ConfigParser        *-- Validator     : validator >
+ConfigParser        --> ParsedModel   : model >
+
+
+' --- JSON DTOs (kotlinx.serialization) ---
+' One @Serializable data class per JSON shape from spec Figures 1-8, plus one
+' root DTO per file. Json.decodeFromString<...Dto>(File(path).readText()) turns
+' the already schema-validated text into these directly - no manual .getInt/
+' .getString field access, and a renamed/mistyped JSON key becomes decoded
+' failure instead of a silent wrong value. Field names below mirror the JSON
+' keys 1:1 so no @SerialName is needed. Fields with "?" have a default and
+' cover the properties that are optional per Figures 6 and 8.
+
+class IngredientDto <<serializable>> {
+    + name: String
+    + unit: String
+    + packagingVolume: Int
+    + bestBefore: Int
+}
+
+class RecipeIngredientDto <<serializable>> {
+    + name: String
+    + unit: String
+    + amount: Int
+}
+
+class RecipeDto <<serializable>> {
+    + id: Int
+    + dishName: String
+    + duration: Int
+    + cookType: MutableList<String>
+    + ingredients: MutableList<RecipeIngredientDto>
+    + basicDishFor: String?
+}
+
+class FoodFileDto <<serializable>> {
+    + ingredients: MutableList<IngredientDto>
+    + recipes: MutableList<RecipeDto>
+}
+
+class TableDto <<serializable>> {
+    + id: Int
+    + type: String
+    + size: Int
+}
+
+class RestaurantJsonDto <<serializable>> {
+    + id: Int
+    + name: String
+    + type: String
+    + openingTickStart: Int
+    + openingTickEnd: Int
+    + deliveryDrivers: Int
+    + event: Boolean?
+    + positiveRatings: Int?
+    + negativeRatings: Int?
+    + recipes: MutableList<Int>
+    + kitchenStaff: Map<String, Int>
+    + waitstaff: Int
+    + tables: MutableList<TableDto>
+}
+
+class RestaurantFileDto <<serializable>> {
+    + restaurants: MutableList<RestaurantJsonDto>
+}
+
+class FoodPreferenceDto <<serializable>> {
+    + size: Int
+    + excludedIngredients: MutableList<String>?
+    + preferredIngredients: MutableList<String>?
+    + favoriteDishes: MutableList<String>?
+}
+
+class CustomerGroupJsonDto <<serializable>> {
+    + id: Int
+    + type: String
+    + size: Int
+    + tableType: String?
+    + visitingTick: Int?
+    + foodPreferences: MutableList<FoodPreferenceDto>
+    .. REGULAR only ..
+    + visitingStart: Int?
+    + visitingPeriod: Int?
+    + restaurant: Int?
+    .. CASUAL only ..
+    + visitingEvenings: MutableList<Int>?
+    + deliveryDistance: Int?
+    + ratingLikelihood: String?
+    .. CASUAL and EVENT ..
+    + restaurantTypes: MutableList<String>?
+    .. EVENT only ..
+    + eventEvening: Int?
+    + favoriteDishes: Map<String, String>?
+}
+
+class IncidentJsonDto <<serializable>> {
+    + id: Int
+    + type: String
+    + evening: Int
+    .. STAFF only ..
+    + restaurant: Int?
+    + number: Int?
+    + staffType: String?
+    + cookType: String?
+    .. RECIPE / PACKAGING / UNAVAILABLE only ..
+    + ingredient: String?
+    + adaptation: Int?
+    + packagingVolume: Int?
+    + duration: Int?
+}
+
+class ScenarioFileDto <<serializable>> {
+    + customers: MutableList<CustomerGroupJsonDto>
+    + incidents: MutableList<IncidentJsonDto>
+}
+
+FoodFileDto      *-- IngredientDto        : ingredients >
+FoodFileDto      *-- RecipeDto            : recipes >
+RecipeDto        *-- RecipeIngredientDto  : ingredients >
+
+RestaurantFileDto    *-- RestaurantJsonDto : restaurants >
+RestaurantJsonDto    *-- TableDto          : tables >
+
+ScenarioFileDto       *-- CustomerGroupJsonDto : customers >
+ScenarioFileDto       *-- IncidentJsonDto      : incidents >
+CustomerGroupJsonDto  *-- FoodPreferenceDto    : foodPreferences >
+
+}
+
+
+' ============================================================
+package Layer0_Simulation #darkgreen {
+
+class Simulator {
+    - maxTicks: Int
+    - restaurants: MutableList<Restaurant>
+    - customers: CustomerRegistry
+    - incidents: MutableList<Incident>
+    - supplier: Supplier
+    - browsing: BrowsingService
+    - delivery: DeliveryService
+    - ratings: RatingBook
+    - statistics: Statistics
+
+    + run(): Unit
+    + restaurantById(id: Int): Restaurant?
+    - runOnlineOrders(): Unit
+    - runEvening(): Unit
+    - runTick(): Unit
+    - bookEventsThreeEveningsAhead(): Unit
+}
+
+object GlobalClock <<<color:blue>singleton</color>>> {
+    - currentTick: Int
+    - evening: Int
+    <color:blue>+ advanceTick(): Unit</color>
+    <color:blue>+ advanceEvening(): Unit</color>
+}
+
+class GrantOrderId{
+    - nextOrderId: Int {nextOrderId >= 1}
+    + grantAndIncrement(): Int
+}
+
+class Restaurant {
+    - id: Int {id >= 0}
+    - name: String
+    - type: RestaurantType
+    - openingTick: Int {1 <= openingTick <= 24}
+    - closingTick: Int {openingTick <= closingTick <= 24}
+    - hostsEvents: Boolean
+    - initialPositiveRatings: Int  {>= 0}
+    - initialNegativeRatings: Int  {>= 0}
+    - foh: FrontOfTheHouse
+    - kitchen: Kitchen
+    - pantry: Pantry
+    - menu: Menu
+
+    + prepare(evening: Int, regulars: MutableList<CustomerGroup>, supplier: Supplier): Unit
+    + subunit(): SubUnits
+    + closeEvening(): Unit
+    + snapshot(): RestaurantData
+    + bookEvent(g: CustomerGroup, evening: Int): Boolean
+    + changeStaff(type: StaffType, cook: CookType?, delta: Int): Unit
+    - isOpen(tick: Int): Boolean
+    - deleteRegulars_failedAttempts(): Unit
+}
+
+note right of Restaurant
+  initialPositiveRatings/initialNegativeRatings come straight
+  from RestaurantJsonDto.positiveRatings/negativeRatings
+  (default 0 if absent) - they only seed RatingBook once, in
+  ConfigurationLoader.buildSimulator(), via
+  RatingBook.seed(id, initialPositiveRatings, initialNegativeRatings)
+  for every parsed restaurant. RatingBook does not exist yet
+  while RestaurantParser runs, so the raw counts have to ride
+  on Restaurant until buildSimulator can seed the book.
+end note
+
+class SubUnits {
+    + restaurantId: Int
+    + menu: Menu
+    + pantry: Pantry
+    + kitchen: Kitchen
+}
+
+class CustomerRegistry {
+    - groups: MutableList<CustomerGroup>
+
+    + regularsFor(restaurantId: Int, evening: Int): MutableList<CustomerGroup>
+    + deciding(evening: Int, tick: Int): MutableList<CustomerGroup>
+}
+
+class Supplier {
+    - unavailableUntil: Map<Ingredient, Int>
+    +resupply(p:Pantry, needed:Map<Ingredient, Int>) : Unit
+    + markUnavailable(i: Ingredient, from: Int, duration: Int): Unit
+}
+class BrowsingService {
+    - entries: MutableList<RestaurantData>
+    - ratings: RatingBook
+
+    + refresh(snapshots: MutableList<RestaurantData>): Unit
+    + choose(g: CustomerGroup): Int?
+    + chooseForEvent(g: CustomerGroup, eventEvening: Int): Int?
+    - rank(candidates: MutableList<RestaurantData>): Int?
+}
+class RestaurantData {
+    + id: Int
+    + type: RestaurantType
+    + openingTick: Int
+    + closingTick: Int
+    + dishes: MutableList<Recipe>
+    + freeSeats: Map<TableType, Int>
+    + freeDrivers: Int
+    + hostsEvents: Boolean
+    + eventSeatsBooked: Map<Int, Int>
+
+    + take(g: CustomerGroup): Unit
+    + takeForEvent(g: CustomerGroup, evening: Int): Unit
+    + openAt(tick: Int): Boolean
+    + eventSeatsLeft(evening: Int): Int
+}
+
+class DeliveryService {
+    - allDrivers: MutableList<DeliveryDriver>
+    - oderId: GrantOrderId
+    + placeOrder(g: CustomerGroup, restaurant:Restaurant, tick: Int): Order?
+    + chooseDriverForOrder(restaurantId: Int): Int
+    + calculateTravelTicks(distance: Int):Int
+    + rmDriver(restaurantId: Int): Unit
+    + addDriver(restaurantId: Int): Unit
+}
+DeliveryService --o Restaurant
+GrantOrderId --o DeliveryService
+class Statistics {
+    - served: Map<Int, Int>
+    - delivered: Map<Int, Int>
+    - cooked: Map<Int, Int>
+    - ratings: Map<Int, Int>
+
+    + record(restaurantId: Int, customers: Int, delivered: Boolean): Unit
+    + recordCooked(restaurantId: Int, meals: Int): Unit
+    + recordRating(restaurantId: Int): Unit
+    + report(): Unit
+}
+
+class RatingBook {
+    - scores: Map<Int, RatingScore>
+
+    + initialiseRating(restaurantId: Int, positive: Int, negative: Int): Unit
+    + add(restaurantId: Int, r: Rating): Unit
+    + ratingScore(restaurantId: Int): RatingScore
+}
+
+class RatingScore {
+    + positive: Int {positive >= 0}
+    + negative: Int {negative >= 0}
+
+    + score(): Int
+}
+
+enum Rating {
+    POSITIVE
+    NEGATIVE
+}
+
+enum Experience {
+    NEGATIVE
+    NEUTRAL
+    POSITIVE
+}
+
+enum RatingLikelihood {
+    NEVER
+    SOME
+    ALWAYS
+}
+
+}
+
+' ============================================================
+package FOH_package #ADD8E6 {
+
+class FrontOfTheHouse {
+    - tables: TableAssignmentService
+    - reservations: ReservationBook
+    - waitstaff: WaiterAssignmentService
+    - seating: SeatingService
+    - ordering: OrderingService
+    - serving: ServingService
+    - dining: DiningService
+    - escorting: EscortingService
+    - rating: RatingService
+    - deliveryDesk: DeliveryDesk
+    - visits: MutableList<Visit>
+    - status: FohStatus
+    - regularsForTonight: MutableList<CustomerGroup>
+    - ctx: SubUnits
+
+    + openEvening(evening: Int, regulars: MutableList<CustomerGroup>): Unit
+    + bookEvent(g: CustomerGroup, evening: Int): Boolean
+    + sendCostumersAway(g: CustomerGroup): Unit
+    + beginTick(tick: Int): Unit
+    + callSeatingService(arrivals: MutableList<CustomerGroup>): Unit
+    + callOrderingService(): Unit
+    + mealsReady(meals: MutableList<Meal>): Unit
+    + callServingService(): Unit
+    + callDeliveryDesk(): Unit
+    + callDiningService(): Unit
+    + callEscortingService(): Unit
+    + callRatingService(): Unit
+    + closeOpeningTime(): Unit
+    + closeEvening(): Unit
+}
+class FohStatus {
+    - freeSeats: Map<TableType, Int>
+    - freeDrivers: Int
+    - totalSeats: Int
+    - reservedSeats: Int
+}
+
+' ---------- services -------------------------------------
+
+class SeatingService {
+    - tables: TableAssignmentService
+    - reservations: ReservationBook
+    - waitstaff: WaiterAssignmentService
+
+    + seat(v: Visit, ctx: SubUnits): Boolean
+}
+
+class OrderingService {
+    - orderid: GrantOrderId
+    + takeOrder(v: Visit, ctx: SubUnits): Order?
+    - chooseFor(c: Customer, available: MutableList<Recipe>): Recipe?
+}
+GrantOrderId --o OrderingService
+class ServingService {
+    - deliveryDesk: DeliveryDesk
+
+    + serve(visits: MutableList<Visit>, waiters: MutableList<Waiter>, ctx: SubUnits): Unit
+}
+
+class DiningService {
+    + eat(visits: MutableList<Visit>, ctx: SubUnits): Unit
+}
+
+class EscortingService {
+    - tables: TableAssignmentService
+    - statistics: Statistics
+
+    + escort(visits: MutableList<Visit>, ctx: SubUnits): Unit
+}
+
+class RatingService {
+    - ratings: RatingBook
+
+    + rateFinished(visits: MutableList<Visit>, ctx: SubUnits): Unit
+    + rateFailedReservation(g: CustomerGroup, ctx: SubUnits): Unit
+}
+
+class TableAssignmentService {
+    - tables: MutableList<Table>
+
+    + assign(size: Int, type: TableType, liftRule: Boolean): Table?
+    + release(t: Table): Unit
+    + freeSeats(): Map<TableType, Int>
+    + totalSeats(): Int
+    + splitAllMerged(): Unit
+    - merge(table1:Table, table2:Table): Table
+    - exactFit(size: Int, pool: MutableList<Table>): Table?
+    - larger(size: Int, pool: MutableList<Table>, strict: Boolean): Table?
+    - merged(size: Int, pool: MutableList<Table>, strict: Boolean): Table?
+}
+
+class ReservationBook {
+    - tonight: Map<Int, Table>
+    - upcoming: Map<Int, MutableList<CustomerGroup>>
+    - tables: TableAssignmentService
+
+    + bookAhead(g: CustomerGroup, evening: Int): Boolean
+    + openEvening(evening: Int, regulars: MutableList<CustomerGroup>): MutableList<CustomerGroup>
+    + claim(groupId: Int): Table?
+    + reservedSeats(): Int
+    + expectedFor(evening: Int): MutableList<CustomerGroup>
+    + clearTonight(): Unit
+}
+
+class WaiterAssignmentService {
+    - waitstaff: MutableList<Waiter>
+    - nextId: Int
+
+    + <color:blue>assignPermanent(v: Visit): Unit</color>
+    + <color:blue>assignEvent(v: Visit, action: ActionType): Unit</color>
+    + beginTick(): Unit
+    + changeStaff(delta: Int): Unit
+    + resetEvening(): Unit
+}
+
+class DeliveryDesk {
+    - drivers: MutableList<DeliveryDriver>
+    - newOrders: MutableList<Order>?
+    - ready: MutableList<Order>?
+    - nextDriverId: Int
+    - statistics: Statistics
+
+    + send():Unit
+    + enqueue(o: Order): Unit
+    + grantDriverId(): Int
+    + resetForEvening(): Unit
+}
+
+' ---------- domain ---------------------------------------
+
+class Visit {
+    - group: CustomerGroup
+    - table: Table?
+    - waiter: MutableList<Waiter>?
+    - order: Order?
+    - orderedTick: Int?
+    - firstMealTick: Int?
+    - seatingAttempts: Int
+    - wasSeated: Boolean
+    - rated: Boolean
+    - <color:blue>leftUnservedThisTick: Int</color>
+    - <color:blue>finishedEatingThisTick: Int</color>
+    - state: VisitState
+
+    + seated(t: Table, w: Waiter, tick: Int): Boolean
+    + ordered(o: Order, tick: Int): Boolean
+    + mealCooked(m: Meal, tick: Int): Unit
+    + pending(action: ActionType, tick: Int): Int
+    + serve(n: Int, tick: Int): MutableList<Meal>
+    + <color:blue>advance(tick: Int): Unit</color>
+    + escort(n: Int, tick: Int): Int
+    + waitAgain(): Boolean
+    + isFinished(): Boolean
+    + experience(tick: Int): Experience
+    + hasRated(): Boolean
+    + markRated(): Unit
+}
+
+abstract class VisitState {
+    
+    + <color:blue>countAwaiting(v: Visit, action: ActionType, tick: Int): Int</color>
+    
+    + <color:blue>onOrdered(v: Visit, o: Order, tick: Int): Unit</color>
+    + <color:blue>onMealCooked(v: Visit, m: Meal, tick: Int): Unit</color>
+    + <color:blue>onServed(v: Visit, meals: MutableList<Meal>, tick: Int): Unit</color>
+    + <color:blue>onTickElapsed(v: Visit, tick: Int): Unit</color>
+    + <color:blue>onEscorted(v: Visit, n: Int, tick: Int): Unit</color>
+}
+
+class AwaitingSeat extends VisitState {
+    + <color:blue>countAwaiting(v: Visit, action: ActionType, tick: Int): Int</color>
+    + <color:blue>onTickElapsed(v: Visit, tick: Int): Unit</color>
+}
+
+class Seated extends VisitState {
+    + <color:blue>countAwaiting(v: Visit, action: ActionType, tick: Int): Int</color>
+    + <color:blue>onOrdered(v: Visit, o: Order, tick: Int): Unit</color>
+    + <color:blue>onTickElapsed(v: Visit, tick: Int): Unit</color>
+}
+
+class AwaitingMeals extends VisitState {
+    + <color:blue>countAwaiting(v: Visit, action: ActionType, tick: Int): Int</color>
+    + <color:blue>onMealCooked(v: Visit, m: Meal, tick: Int): Unit</color>
+    + <color:blue>onServed(v: Visit, meals: MutableList<Meal>, tick: Int): Unit</color>
+    + <color:blue>onTickElapsed(v: Visit, tick: Int): Unit</color>
+}
+
+class EatingUp extends VisitState {
+    + <color:blue>onTickElapsed(v: Visit, tick: Int): Unit</color>
+}
+
+class ReadyToLeave extends VisitState {
+    + <color:blue>countAwaiting(v: Visit, action: ActionType, tick: Int): Int</color>
+    + <color:blue>onEscorted(v: Visit, n: Int, tick: Int): Unit</color>
+}
+
+class Gone extends VisitState
+
+class Table {
+    - status: TableStatus
+    - id: Int
+    - size: Int
+    - type: TableType
+    - mergedFromTables: MutableList<Table>?
+
+}
+
+class Waiter {
+    - id: Int?
+    - currentLoad: Int
+    - tickLoad: Map<ActionType, Int>
+    + {static} ACTION_LIMIT: Int = 10
+
+    + remaining(action: ActionType): Int
+    + consume(action: ActionType, n: Int): Unit
+    + adjustLoad(delta: Int): Unit
+    + beginTick(): Unit
+    + resetEvening(): Unit
+}
+
+class DeliveryDriver {
+    - id: Int?
+    - departureTick:Int?
+    - order: Order?
+    - restaurantId: Int
+    - ticksLeft: Int?
+    - state: DriverState
+    + plusTick(): Unit
+    + receiveOrder(o:Order, tick:Int): Unit
+    + isFree(): Boolean
+    + abort(): Unit
+    + startReturn(travelTicks:Int): Unit
+}
+enum  DriverState {
+DELIVERING,
+WAITING,
+RETURNING
+}
+
+enum TableType {
+    COMMON
+    BAR
+    SEPARATED
+}
+
+enum TableStatus {
+    FREE
+    RESERVED
+    OCCUPIED
+}
+
+enum ActionType {
+    SEATING
+    ORDERING
+    SERVING
+    ESCORTING
+}
+
+}
+
+' ============================================================
+package Kitchen_package #E04C61 {
+
+class Kitchen {
+    - roster: CookRoster
+    - pantry: Pantry
+    -queue: MutableList<Order>
+    - reservationBook: ReservationBook
+    + enqueue(o: Order): Unit
+    + cook(): MutableList<Meal>
+    + planEvening(expectedCostumers: MutableList<CustomerGroup>, otherSeats: Int): Unit
+    + canCook(r: Recipe): Boolean
+    + changeStaff(type: CookType, delta: Int): Unit
+    + closeEvening(): Unit
+}
+class CookRoster {
+    - kitchenStaff: Map<CookType, Int>
+    - cooks: MutableList<Cook>
+    - nextId: Int
+
+    + claim(r: Recipe, tick: Int): Cook?
+    + finished(tick: Int): MutableList<Meal>
+    + hasEligible(r: Recipe): Boolean
+    + changeStaff(type: CookType, delta: Int): Unit
+    + resetEvening(): Unit
+    - updateQueueWithCooked(): Unit
+}
+
+class Cook {
+    - type: CookType
+    - id: Int?
+    - busyUntil: Int?
+    - batch: MutableList<Meal>
+    + startCooking(meals: MutableList<Meal>, tick: Int): Unit
+    + endCooking(tick: Int): MutableList<Meal>
+    + isFree(tick: Int): Boolean
+}
+enum CookType {
+    EXEC
+    SOUS
+    TOURNANT
+    SAUCE
+    FISH
+    ROAST
+    VEGETABLE
+    PASTRY
+}
+
+}
+
+' ============================================================
+package Shared_package #lightgrey {
+
+
+class Pantry {
+    <color:blue>-stock: MutableMap<String, MutableMap<Int, List<Int>></color>
+    - reserved: Map<String, Int>
+    + checkDateAndCleanOut(): Unit
+    + reserve(r: Recipe): Boolean
+    + deleteFromReserved(r: Recipe, cooked: Boolean): Unit
+    + canCover(r: Recipe): Boolean
+    + discardEvening(): Unit
+}
+class Menu {
+    + orderable: MutableList<Recipe>
+    - recipes: MutableList<Recipe>
+    - pantry: Pantry
+    - kitchen: Kitchen
+
+    + refresh(): Unit
+}
+
+
+class Ingredient {
+    - name: String
+    - unit: UnitType
+    - packagingVolume: Int {packagingVolume > 0}
+    - bestUntil: Int {bestUntil > 0}
+
+    + packagesFor(amount: Int): Int
+}
+
+class RecipeIngredient {
+    - ingredient: Ingredient
+    - amount: Int {amount > 0}
+
+    + adaptBy(percent: Int): Unit
+}
+
+class Recipe {
+    - id: Int {id >= 0}
+    - dishName: String
+    - minuteDuration: Int {2 <= minuteDuration <= 40}
+    - cookTypes: Set<CookType> {not empty}
+    - ingredients: MutableList<RecipeIngredient>
+    - basicDishFor: RestaurantType?
+
+    + durationInTicks(): Int
+    + isBasicFor(t: RestaurantType): Boolean
+    + cookableBy(t: CookType): Boolean
+}
+
+class Order {
+    - id: Int {id >= 1}
+    - group: CustomerGroup
+    - restaurantId: Int
+    - customerGroupId: Int
+    - placedTick: Int
+    - isDelivery: Boolean
+    - meals: MutableList<Meal>
+
+    + dishCounts(): Map<String, Int>
+    + allCooked(): Boolean
+    + ticksSince(tick: Int): Int
+}
+
+class Meal {
+    - order: Order
+    - customer: Customer
+    - recipe: Recipe
+    - finishedTick: Int?
+    - status: MealStatus
+}
+
+abstract class CustomerGroup {
+    - id: Int {id >= 0}
+    - groupSize: Int {1 <= groupSize <= 10}
+    - groupType: GroupType
+    - tableType: TableType
+    - visitingTick: Int {1 <= visitingTick <= 21}
+    - deliveryDistance: Int?
+    - members: MutableList<Customer>
+    - preferences: MutableList<FoodPreference>
+    - history: History
+
+    + {abstract} visitsOn(evening: Int): Boolean
+    + {abstract} homeRestaurant(): Int?
+    + {abstract} ratingFor(e: Experience): Rating?
+    + {abstract} expectedDishes(menu: MutableList<Recipe>): Map<Recipe, Int>
+    + dishOverride(t: RestaurantType): String?
+    + acceptsAny(dishes: MutableList<Recipe>): Boolean
+    + recordVisit(evening: Int, o: Order): Unit
+    + recordOutcome(e: Experience): Unit
+    + hasGivenUp(): Boolean
+    + isDelivery(): Boolean
+}
+
+class History{
+-minus1Visit:List<Meal>?
+-minus2Visit:List<Meal>?
+-minus3Visit:List<Meal>?
++shiftAndPutNew(orders:List<Meal>):Unit
++getLastThree():List<Meal>
+}
+History --* CustomerGroup
+class RegularCustomerGroup extends CustomerGroup {
+    - visitingStart: Int {visitingStart >= 0}
+    - visitingPeriod: Int {1 <= visitingPeriod <= 10}
+    - restaurantId: Int {restaurantId >= 0}
+    - failedAttempts: Int
+}
+
+class CasualCustomerGroup extends CustomerGroup {
+    - restaurantTypes: Set<RestaurantType>
+    - visitingEvenings: MutableList<Int> {size > 0}
+    - ratingLikelihood: RatingLikelihood
+}
+
+class EventCustomerGroup extends CustomerGroup {
+    - groupSize: Int {4 <= groupSize <= 100}
+    - restaurantTypes: Set<RestaurantType>
+    - eventEvening: Int {eventEvening >= 4}
+    - favouriteDishes: Map<RestaurantType, String>
+    - bookedRestaurant: Int?
+
+    + booksOn(evening: Int): Boolean
+}
+
+class Customer {
+    - preference: FoodPreference?
+    - chosenDish: Recipe?
+    - meal: Meal?
+    - servedTick: Int?
+    - status: CustomerStatus
+
+    + receive(m: Meal, tick: Int): Unit
+    + isDoneEating(tick: Int): Boolean
+    + leave(): Unit
+}
+
+class FoodPreference {
+    - size: Int {size > 0}
+    - excluded: Set<Ingredient>
+    - preferred: Set<Ingredient>
+    - favouriteDishNames: MutableList<String>
+
+    + accepts(r: Recipe): Boolean
+    + rank(r: Recipe): Int
+    + firstFavourite(from: MutableList<Recipe>): Recipe?
+}
+
+enum RestaurantType {
+    EUROPEAN
+    ASIAN
+    AFRICAN
+    AMERICAN
+}
+
+enum UnitType {
+    G
+    ML
+    X
+}
+
+enum MealStatus {
+    QUEUED
+    COOKING
+    COOKED
+    SERVED
+    ABORTED
+}
+
+enum CustomerStatus {
+    ORDERED
+    SERVED
+    DONE_EATING
+    LEFT
+}
+
+enum GroupType {
+    REGULAR,
+    CASUAL,
+    EVENT
+}
+
+enum StaffType {
+    COOK
+    WAITSTAFF
+    DRIVER
+}
+
+}
+
+' ============================================================
+package Incidents_package #5af904f9 {
+
+abstract class Incident {
+    - id: Int {id >= 0}
+    - evening: Int {evening >= 0}
+
+    + {abstract} type: IncidentType
+    + {abstract} apply(sim: Simulator): Unit
+}
+note right of Incident
+  apply() takes the whole Simulator, not one Restaurant,
+  because only StaffChange is restaurant-scoped. RecipeChange
+  and PackagingChange are global (spec: "changes all recipes
+  in all restaurants that use a specific ingredient" / "the
+  packaging volume of one ingredient" - the ingredient object
+  is shared, so this alone reaches every recipe using it, but
+  the incident still needs sim.restaurants to log/iterate).
+  IngredientUnavailability acts on the shared Supplier, which
+  Restaurant does not reference - only Simulator does.
+end note
+
+class StaffChange extends Incident {
+    - restaurantId: Int
+    - number: Int {number != 0}
+    - staffType: StaffType
+    - cookType: CookType? {cookType != EXEC}
+
+    + type: IncidentType = STAFF
+    + apply(sim: Simulator): Unit
+}
+
+class RecipeChange extends Incident {
+    - ingredient: Ingredient
+    - adaptation: Int {adaptation != 0}
+
+    + type: IncidentType = RECIPE
+    + apply(sim: Simulator): Unit
+}
+note right of RecipeChange
+  apply(sim): for every restaurant's every recipe, find the
+  RecipeIngredient(s) matching this.ingredient and call
+  .adaptBy(adaptation) on each. Global and permanent (spec:
+  "changes all recipes in all restaurants that use a
+  specific ingredient"), not scoped to one restaurant.
+end note
+
+class PackagingChange extends Incident {
+    - ingredient: Ingredient
+    - packagingVolume: Int {packagingVolume > 0}
+
+    + type: IncidentType = PACKAGING
+    + apply(sim: Simulator): Unit
+}
+
+class IngredientUnavailability extends Incident {
+    - ingredient: Ingredient
+    - duration: Int {duration > 0}
+
+    + type: IncidentType = UNAVAILABLE
+    + apply(sim: Simulator): Unit
+}
+
+enum IncidentType {
+    STAFF
+    RECIPE
+    PACKAGING
+    UNAVAILABLE
+}
+
+}
+
+
+' ============================================================
+package Logging_package #lightyellow {
+
+
+object Logger <<singleton>> {
+    - level: LogLevel
+    - out: PrintWriter
+
+    + configure(level: LogLevel, out: PrintWriter): Unit
+    - write(messageLevel: LogLevel, message: String): Unit
+    .. initialisation ..
+    + configParsed(fileName: String): Unit
+    + configInvalid(fileName: String): Unit
+    .. simulation ..
+    + simulationStarted(): Unit
+    + incidentOccurred(incidentId: Int, type: IncidentType, evening: Int): Unit
+    + preparationStarted(evening: Int): Unit
+    + servingStarted(evening: Int): Unit
+    + tickStarted(tick: Int, tickInEvening: Int): Unit
+    + servingEnded(evening: Int): Unit
+    + restaurantStart(restaurantId: Int): Unit
+    + restaurantEnd(restaurantId: Int): Unit
+    + statisticsCalculated(): Unit
+    .. pantry ..
+    + pantryRemoved(restaurantId: Int, amount: Int, unit: UnitType, name: String): Unit
+    + procured(restaurantId: Int, amount: Int, unit: UnitType, name: String): Unit
+    + restocked(restaurantId: Int): Unit
+    .. customers ..
+    + restaurantDecision(groupId: Int, restaurantId: Int): Unit
+    + noRestaurantDecision(groupId: Int): Unit
+    + arrival(restaurantId: Int, groupId: Int): Unit
+    + noEating(restaurantId: Int, customers: Int, groupId: Int, tableId: Int): Unit
+    + finishedEating(restaurantId: Int, customers: Int, groupId: Int, tableId: Int): Unit
+    + eatingStatus(restaurantId: Int, eating: Int, eaten: Int): Unit
+    .. front of house ..
+    + noReserving(restaurantId: Int, groupId: Int): Unit
+    + mergingTables(restaurantId: Int, groupId: Int, oldIds: Collection<Int>, mergedId: Int): Unit
+    + seating(restaurantId: Int, groupId: Int, tableId: Int, waiterIds: Collection<Int>): Unit
+    + noSeatingNoWaiter(restaurantId: Int, groupId: Int): Unit
+    + noSeatingNoTable(restaurantId: Int, waiterId: Int, groupId: Int): Unit
+    + ordering(restaurantId: Int, groupId: Int, orderId: Int, dishes: Map<String, Int>, waiterId: Int?): Unit
+    + noOrdering(restaurantId: Int, groupId: Int, customers: Int): Unit
+    + seatingStatus(restaurantId: Int, waiters: Int, customers: Int, tables: Int): Unit
+    + orderingStatus(restaurantId: Int, customers: Int, waiters: Int): Unit
+    + serving(restaurantId: Int, waiterId: Int, dishes: Map<String, Int>, tableId: Int, ticksAfterOrder: Int): Unit
+    + noServing(restaurantId: Int, waiterId: Int, meals: Int, tableId: Int): Unit
+    + deliveryHandover(restaurantId: Int, waiterId: Int, dishes: Map<String, Int>, driverId: Int, orderId: Int): Unit
+    + servingStatus(restaurantId: Int, waiters: Int, meals: Int): Unit
+    + escorting(restaurantId: Int, waiterId: Int, customers: Int, groupId: Int, tableId: Int): Unit
+    + escortingStatus(restaurantId: Int, waiters: Int, customers: Int): Unit
+    .. rating ..
+    + rating(restaurantId: Int, groupId: Int, rating: Rating, positiveRatings: Int, negativeRatings: Int): Unit
+    + ratingStatus(restaurantId: Int, groups: Int): Unit
+    .. kitchen ..
+    + dishAssignment(restaurantId: Int, cookId: Int, cookType: CookType, meals: Int, dishName: String, sourceOrderId: Int, allOrderIds: Collection<Int>): Unit
+    + mealCooked(restaurantId: Int, cookId: Int, meals: Int, dishName: String, ticksAfterOrder: Int): Unit
+    + kitchenStatus(restaurantId: Int, cooks: Int, total: Int, finished: Int, servable: Int): Unit
+    .. delivery ..
+    + deliveryPreparation(restaurantId: Int, driverId: Int, orderId: Int, groupId: Int, ticks: Int): Unit
+    + deliveryDriving(restaurantId: Int, driverId: Int, distance: Int, ticksLeft: Int): Unit
+    + deliveryArrival(restaurantId: Int, driverId: Int, groupId: Int, orderId: Int): Unit
+    + deliveryFinished(restaurantId: Int, driverId: Int, orderId: Int, groupId: Int): Unit
+    + deliveryFailed(restaurantId: Int, driverId: Int, orderId: Int, groupId: Int): Unit
+    + deliveryGivenUp(restaurantId: Int, groupId: Int, orderId: Int): Unit
+    + deliveryReturned(restaurantId: Int, driverId: Int): Unit
+    + deliveryFinishedEating(restaurantId: Int, groupId: Int): Unit
+    .. statistics ..
+    + statMealsCooked(restaurantId: Int, meals: Int): Unit
+    + statCustomersServed(restaurantId: Int, customers: Int): Unit
+    + statCustomersDelivered(restaurantId: Int, customers: Int): Unit
+    + statRatings(restaurantId: Int, ratings: Int): Unit
+}
+
+enum LogLevel {
+    DEBUG
+    INFO
+    IMPORTANT
+}
+
+class LogFormat {
+    + ids(values: Collection<Int>): String
+    + mapping(entries: Map<String, Int>): String
+    + restaurantTag(restaurantId: Int): String
+}
+
+note bottom of LogFormat
+  Shared formatting rules from spec 2.3.1:
+  - multi-value parts sorted ascending,
+    comma separated       -> 3,5,7,8
+  - key-value mappings as "key:value"
+    comma separated       -> A:3,B:5,C:7
+end note
+
+Logger *-- LogLevel
+Logger *-- LogFormat
+
+}
+
+' ============================================================
+' relations - every arrow points DOWN a layer
+' ============================================================
+
+' layer 0 -> 1
+Simulator o-- Restaurant
+Simulator o-- CustomerRegistry
+Simulator o-- Supplier
+Simulator o-- BrowsingService
+Simulator o-- DeliveryService
+Simulator o-- RatingBook
+Simulator o-- Statistics
+Simulator o-- Incident
+
+' layer 1 -> 2
+Restaurant o-- FrontOfTheHouse
+Restaurant o-- Kitchen
+Restaurant o-- Pantry
+Restaurant o-- Menu
+CustomerRegistry o-- CustomerGroup
+Supplier o-- Ingredient
+BrowsingService o-- RestaurantData
+BrowsingService o-- RatingBook
+RatingBook o-- RatingScore
+RatingScore --> Rating
+RestaurantData o-- Recipe
+FrontOfTheHouse o-- SubUnits
+SubUnits o-- Menu
+SubUnits o-- Pantry
+SubUnits o-- Kitchen
+
+' layer 2 -> 3
+FrontOfTheHouse o-- SeatingService
+FrontOfTheHouse o-- OrderingService
+FrontOfTheHouse o-- ServingService
+FrontOfTheHouse o-- DiningService
+FrontOfTheHouse o-- EscortingService
+FrontOfTheHouse o-- RatingService
+RatingService o-- RatingBook
+FrontOfTheHouse o-- TableAssignmentService
+FrontOfTheHouse o-- ReservationBook
+FrontOfTheHouse o-- WaiterAssignmentService
+FrontOfTheHouse o-- DeliveryDesk
+FrontOfTheHouse o-- Visit
+FrontOfTheHouse --> FohStatus
+
+Kitchen o-- ReservationBook
+Kitchen o-- CookRoster
+Kitchen o-- Pantry
+
+' layer 3 internals
+SeatingService o-- TableAssignmentService
+SeatingService o-- ReservationBook
+SeatingService o-- WaiterAssignmentService
+ServingService o-- DeliveryDesk
+EscortingService o-- TableAssignmentService
+EscortingService o-- Statistics
+ReservationBook o-- TableAssignmentService
+
+' layer 3 -> 4
+TableAssignmentService o-- Table
+WaiterAssignmentService o-- Waiter
+DeliveryDesk o-- DeliveryDriver
+DeliveryDesk o-- Order
+CookRoster o-- Cook
+
+' layer 4 domain
+Visit o-- CustomerGroup
+Visit o-- Table
+Visit o-- Waiter
+Visit o-- Order
+Visit o-- VisitState
+
+Table o-- TableStatus
+Table o-- TableType
+Table o-- Table
+
+Waiter o-- ActionType
+DeliveryDriver o-- DriverState
+DeliveryDriver o-- Order
+
+Cook o-- CookType
+Cook o-- Meal
+
+Pantry o-- Ingredient
+Menu o-- Recipe
+Menu o-- Pantry
+Menu o-- Kitchen
+
+Recipe o-- RecipeIngredient
+Recipe o-- CookType
+RecipeIngredient o-- Ingredient
+Ingredient o-- UnitType
+
+Order o-- Meal
+Meal o-- Customer
+Meal o-- Recipe
+Meal o-- MealStatus
+
+CustomerGroup o-- GroupType
+CustomerGroup o-- Customer
+CustomerGroup o-- FoodPreference
+CustomerGroup o-- TableType
+CasualCustomerGroup o-- RatingLikelihood
+EventCustomerGroup o-- RestaurantType
+ReservationBook o-- CustomerGroup
+Customer o-- FoodPreference
+Customer o-- CustomerStatus
+FoodPreference o-- Ingredient
+
+' incidents
+Incident o-- IncidentType
+StaffChange o-- StaffType
+RecipeChange o-- Ingredient
+PackagingChange o-- Ingredient
+IngredientUnavailability o-- Ingredient
+
+' config
+ConfigParser <|-- FoodParser
+ConfigParser <|-- RestaurantParser
+ConfigParser <|-- ScenarioParser
+ConfigurationLoader o-- ParsedModel
+ConfigurationLoader o-- ConfigParser
+ConfigParser o-- ParsedModel
+RestaurantParser --> Restaurant
+ParsedModel o-- Restaurant : restaurantsById >
+
+@enduml
