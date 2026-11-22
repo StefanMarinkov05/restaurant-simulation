@@ -65,15 +65,25 @@ Each feature had one implementer and two testers who were not the implementer.
 
 ### My part (Stefan)
 
-- **Parsing and validation:** `ScenarioParser`, `CustomerGroupSerialiser`, `IncidentSerialiser` and the DTOs;
-  `Validator`, the cross-file validation every parser uses.
-- **Customer model:** `CustomerGroup` hierarchy (`RegularCustomerGroup`, `CasualCustomerGroup`), `Customer`,
-  `History`, `FoodPreference`, the decision which restaurant to visit, the waiting, eating and give-up clocks,
-  and `ratingFor`.
-- **Testing:** unit tests for logging, simulator, tables, waiters, ordering, serving, incidents; wrote
-  `SystemTestRegistration` and about 28% of the system-test code (validation, delivery, kitchen, incidents).
-- **Bugs found and fixed while testing:** tick log format, delivery rating and eating lifecycle, ingredient
-  packaging calculation, a patience-window off-by-one, delivery-order timing.
+| Area | What I built |
+|---|---|
+| Scenario parsing | `ScenarioParser`, `CustomerGroupSerialiser`, `IncidentSerialiser` and their DTOs |
+| Validation | `Validator` (JSON schema check, used by all three parsers); file-scope and cross-file rules for customers and incidents |
+| Customer model | `CustomerGroup` hierarchy (regular, casual), `Customer`, `History`, `FoodPreference` |
+| Behaviour | restaurant choice, waiting, eating and give-up clocks, ratings (`ratingFor`) |
+| Testing | unit tests for logging, simulator, tables, waiters, ordering, serving, incidents; `SystemTestRegistration`; about 28% of the system-test code |
+
+Characteristics of my part:
+
+- **Template Method:** `ScenarioParser` fills the hooks of the shared `ConfigParser` pipeline (`readEntities`, `validateFileScope`)
+- **Factory:** `CustomerGroupSerialiser` builds a regular, casual or event group from the type field
+- **Polymorphism over conditionals:** abstract `CustomerGroup` (`ratingFor`, `visitsOn`, `expectedDishes`), one subclass per group type
+- **DTO mapping:** JSON DTOs (kotlinx.serialization) kept apart from the domain model
+- **Multi-stage validation:** JSON schema, then entity rules, then cross-file references (ingredients, dishes, restaurants)
+- **Interval logic:** overlapping unavailability windows rejected; delivery and visiting ticks checked against opening windows
+- **Discrete-time state:** per-tick waiting, eating and patience counters; fixed an off-by-one at the patience boundary
+- **Testing:** unit, integration and system tests; boundary-value cases; mutation-driven system tests
+- **Quality:** detekt clean with no suppressions; fixed bugs found while testing (log format, delivery lifecycle, packaging calculation, order timing)
 
 ## Build and run
 
